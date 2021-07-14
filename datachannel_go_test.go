@@ -10,6 +10,8 @@ import (
 	"io/ioutil"
 	"math/big"
 	"reflect"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,8 +69,7 @@ func TestDataChannel_MessagesAreOrdered(t *testing.T) {
 		// math/rand a weak RNG, but this does not need to be secure. Ignore with #nosec
 		/* #nosec */
 		randInt, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
-		/* #nosec */
-		if err != nil {
+		/* #nosec */ if err != nil {
 			t.Fatalf("Failed to get random sleep duration: %s", err)
 		}
 		time.Sleep(time.Duration(randInt.Int64()) * time.Microsecond)
@@ -117,7 +118,7 @@ func TestDataChannelParamters_Go(t *testing.T) {
 	defer report()
 
 	t.Run("MaxPacketLifeTime exchange", func(t *testing.T) {
-		var ordered = true
+		ordered := true
 		var maxPacketLifeTime uint16 = 3
 		options := &DataChannelInit{
 			Ordered:           &ordered,
@@ -162,7 +163,6 @@ func TestDataChannelParamters_Go(t *testing.T) {
 		assert.Equal(t, dc.label, dc.Label(), "should match")
 		assert.Equal(t, dc.protocol, dc.Protocol(), "should match")
 		assert.Equal(t, dc.negotiated, dc.Negotiated(), "should match")
-		assert.Equal(t, dc.readyState, dc.ReadyState(), "should match")
 		assert.Equal(t, uint64(0), dc.BufferedAmount(), "should match")
 		dc.SetBufferedAmountLowThreshold(1500)
 		assert.Equal(t, uint64(1500), dc.BufferedAmountLowThreshold(), "should match")
@@ -218,8 +218,7 @@ func TestDataChannelBufferedAmount(t *testing.T) {
 					t.Fatalf("Failed to send string on data channel")
 				}
 				assert.Equal(t, uint64(1500), dc.BufferedAmountLowThreshold(), "value mismatch")
-
-				//assert.Equal(t, (i+1)*len(buf), int(dc.BufferedAmount()), "unexpected bufferedAmount")
+				// assert.Equal(t, (i+1)*len(buf), int(dc.BufferedAmount()), "unexpected bufferedAmount")
 			}
 		})
 
@@ -300,8 +299,7 @@ func TestDataChannelBufferedAmount(t *testing.T) {
 					t.Fatalf("Failed to send string on data channel")
 				}
 				assert.Equal(t, uint64(1500), dc.BufferedAmountLowThreshold(), "value mismatch")
-
-				//assert.Equal(t, (i+1)*len(buf), int(dc.BufferedAmount()), "unexpected bufferedAmount")
+				// assert.Equal(t, (i+1)*len(buf), int(dc.BufferedAmount()), "unexpected bufferedAmount")
 			}
 		})
 
@@ -436,18 +434,13 @@ func TestEOF(t *testing.T) {
 		lim := test.TimeOut(time.Second * 5)
 		defer lim.Stop()
 
-		// Use Detach data channels mode
-		s := SettingEngine{}
-		//s.DetachDataChannels()
-		api := NewAPI(WithSettingEngine(s))
-
 		// Set up two peer connections.
 		config := Configuration{}
-		pca, err := api.NewPeerConnection(config)
+		pca, err := NewPeerConnection(config)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pcb, err := api.NewPeerConnection(config)
+		pcb, err := NewPeerConnection(config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -527,4 +520,60 @@ func TestEOF(t *testing.T) {
 		<-dcaClosedCh // (1)
 		<-dcbClosedCh // (2)
 	})
+}
+
+// Assert that a Session Description that doesn't follow
+// draft-ietf-mmusic-sctp-sdp is still accepted
+func TestDataChannel_NonStandardSessionDescription(t *testing.T) {
+	to := test.TimeOut(time.Second * 20)
+	defer to.Stop()
+
+	report := test.CheckRoutines(t)
+	defer report()
+
+	offerPC, answerPC, err := newPair()
+	assert.NoError(t, err)
+
+	_, err = offerPC.CreateDataChannel("foo", nil)
+	assert.NoError(t, err)
+
+	onDataChannelCalled := make(chan struct{})
+	answerPC.OnDataChannel(func(_ *DataChannel) {
+		close(onDataChannelCalled)
+	})
+
+	offer, err := offerPC.CreateOffer(nil)
+	assert.NoError(t, err)
+
+	offerGatheringComplete := GatheringCompletePromise(offerPC)
+	assert.NoError(t, offerPC.SetLocalDescription(offer))
+	<-offerGatheringComplete
+
+	offer = *offerPC.LocalDescription()
+
+	// Replace with old values
+	const (
+		oldApplication = "m=application 63743 DTLS/SCTP 5000\r"
+		oldAttribute   = "a=sctpmap:5000 webrtc-datachannel 256\r"
+	)
+
+	offer.SDP = regexp.MustCompile(`m=application (.*?)\r`).ReplaceAllString(offer.SDP, oldApplication)
+	offer.SDP = regexp.MustCompile(`a=sctp-port(.*?)\r`).ReplaceAllString(offer.SDP, oldAttribute)
+
+	// Assert that replace worked
+	assert.True(t, strings.Contains(offer.SDP, oldApplication))
+	assert.True(t, strings.Contains(offer.SDP, oldAttribute))
+
+	assert.NoError(t, answerPC.SetRemoteDescription(offer))
+
+	answer, err := answerPC.CreateAnswer(nil)
+	assert.NoError(t, err)
+
+	answerGatheringComplete := GatheringCompletePromise(answerPC)
+	assert.NoError(t, answerPC.SetLocalDescription(answer))
+	<-answerGatheringComplete
+	assert.NoError(t, offerPC.SetRemoteDescription(*answerPC.LocalDescription()))
+
+	<-onDataChannelCalled
+	closePairNow(t, offerPC, answerPC)
 }

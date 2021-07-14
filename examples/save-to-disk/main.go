@@ -1,20 +1,23 @@
+// +build !js
+
 package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v3/examples/internal/signal"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/ivfwriter"
 	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
-
-	"github.com/pion/webrtc/v3/examples/internal/signal"
 )
 
-func saveToDisk(i media.Writer, track *webrtc.Track) {
+func saveToDisk(i media.Writer, track *webrtc.TrackRemote) {
 	defer func() {
 		if err := i.Close(); err != nil {
 			panic(err)
@@ -22,7 +25,7 @@ func saveToDisk(i media.Writer, track *webrtc.Track) {
 	}()
 
 	for {
-		rtpPacket, err := track.ReadRTP()
+		rtpPacket, _, err := track.ReadRTP()
 		if err != nil {
 			panic(err)
 		}
@@ -33,18 +36,39 @@ func saveToDisk(i media.Writer, track *webrtc.Track) {
 }
 
 func main() {
+	// Everything below is the Pion WebRTC API! Thanks for using it ❤️.
+
 	// Create a MediaEngine object to configure the supported codec
-	m := webrtc.MediaEngine{}
+	m := &webrtc.MediaEngine{}
 
 	// Setup the codecs you want to use.
-	// We'll use a VP8 codec but you can also define your own
-	m.RegisterCodec(webrtc.NewRTPOpusCodec(webrtc.DefaultPayloadTypeOpus, 48000))
-	m.RegisterCodec(webrtc.NewRTPVP8Codec(webrtc.DefaultPayloadTypeVP8, 90000))
+	// We'll use a VP8 and Opus but you can also define your own
+	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000, Channels: 0, SDPFmtpLine: "", RTCPFeedback: nil},
+		PayloadType:        96,
+	}, webrtc.RTPCodecTypeVideo); err != nil {
+		panic(err)
+	}
+	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 0, SDPFmtpLine: "", RTCPFeedback: nil},
+		PayloadType:        111,
+	}, webrtc.RTPCodecTypeAudio); err != nil {
+		panic(err)
+	}
+
+	// Create a InterceptorRegistry. This is the user configurable RTP/RTCP Pipeline.
+	// This provides NACKs, RTCP Reports and other features. If you use `webrtc.NewPeerConnection`
+	// this is enabled by default. If you are manually managing You MUST create a InterceptorRegistry
+	// for each PeerConnection.
+	i := &interceptor.Registry{}
+
+	// Use the default set of Interceptors
+	if err := webrtc.RegisterDefaultInterceptors(m, i); err != nil {
+		panic(err)
+	}
 
 	// Create the API object with the MediaEngine
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(m))
-
-	// Everything below is the Pion WebRTC API! Thanks for using it ❤️.
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(i))
 
 	// Prepare the configuration
 	config := webrtc.Configuration{
@@ -80,12 +104,12 @@ func main() {
 	// Set a handler for when a new remote track starts, this handler saves buffers to disk as
 	// an ivf file, since we could have multiple video tracks we provide a counter.
 	// In your application this is where you would handle/process video
-	peerConnection.OnTrack(func(track *webrtc.Track, receiver *webrtc.RTPReceiver) {
+	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
 		go func() {
 			ticker := time.NewTicker(time.Second * 3)
 			for range ticker.C {
-				errSend := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: track.SSRC()}})
+				errSend := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}})
 				if errSend != nil {
 					fmt.Println(errSend)
 				}
@@ -93,10 +117,10 @@ func main() {
 		}()
 
 		codec := track.Codec()
-		if codec.Name == webrtc.Opus {
+		if strings.EqualFold(codec.MimeType, webrtc.MimeTypeOpus) {
 			fmt.Println("Got Opus track, saving to disk as output.opus (48 kHz, 2 channels)")
 			saveToDisk(oggFile, track)
-		} else if codec.Name == webrtc.VP8 {
+		} else if strings.EqualFold(codec.MimeType, webrtc.MimeTypeVP8) {
 			fmt.Println("Got VP8 track, saving to disk as output.ivf")
 			saveToDisk(ivfFile, track)
 		}
@@ -109,19 +133,22 @@ func main() {
 
 		if connectionState == webrtc.ICEConnectionStateConnected {
 			fmt.Println("Ctrl+C the remote client to stop the demo")
-		} else if connectionState == webrtc.ICEConnectionStateFailed ||
-			connectionState == webrtc.ICEConnectionStateDisconnected {
-			closeErr := oggFile.Close()
-			if closeErr != nil {
+		} else if connectionState == webrtc.ICEConnectionStateFailed {
+			if closeErr := oggFile.Close(); closeErr != nil {
 				panic(closeErr)
 			}
 
-			closeErr = ivfFile.Close()
-			if closeErr != nil {
+			if closeErr := ivfFile.Close(); closeErr != nil {
 				panic(closeErr)
 			}
 
 			fmt.Println("Done writing media files")
+
+			// Gracefully shutdown the peer connection
+			if closeErr := peerConnection.Close(); closeErr != nil {
+				panic(closeErr)
+			}
+
 			os.Exit(0)
 		}
 	})

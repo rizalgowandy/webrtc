@@ -7,9 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/sdp/v2"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/transport/test"
-
 	"github.com/stretchr/testify/assert"
 )
 
@@ -73,22 +72,22 @@ func TestSDPSemantics_PlanBOfferTransceivers(t *testing.T) {
 		t.Errorf("NewPeerConnection failed: %v", err)
 	}
 
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionSendrecv,
 	}); err != nil {
 		t.Errorf("AddTransceiver failed: %v", err)
 	}
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionSendrecv,
 	}); err != nil {
 		t.Errorf("AddTransceiver failed: %v", err)
 	}
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionSendrecv,
 	}); err != nil {
 		t.Errorf("AddTransceiver failed: %v", err)
 	}
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionSendrecv,
 	}); err != nil {
 		t.Errorf("AddTransceiver failed: %v", err)
@@ -130,8 +129,7 @@ func TestSDPSemantics_PlanBOfferTransceivers(t *testing.T) {
 	mdNames = getMdNames(answer.parsed)
 	assert.ObjectsAreEqual(mdNames, []string{"video", "audio", "data"})
 
-	assert.NoError(t, apc.Close())
-	assert.NoError(t, opc.Close())
+	closePairNow(t, apc, opc)
 }
 
 func TestSDPSemantics_PlanBAnswerSenders(t *testing.T) {
@@ -148,12 +146,12 @@ func TestSDPSemantics_PlanBAnswerSenders(t *testing.T) {
 		t.Errorf("NewPeerConnection failed: %v", err)
 	}
 
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionRecvonly,
 	}); err != nil {
 		t.Errorf("Failed to add transceiver")
 	}
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionRecvonly,
 	}); err != nil {
 		t.Errorf("Failed to add transceiver")
@@ -174,28 +172,28 @@ func TestSDPSemantics_PlanBAnswerSenders(t *testing.T) {
 		t.Errorf("NewPeerConnection failed: %v", err)
 	}
 
-	video1, err := NewTrack(DefaultPayloadTypeH264, 1, "1", "1", NewRTPH264Codec(DefaultPayloadTypeH264, 90000))
+	video1, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "video/h264", SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"}, "1", "1")
 	if err != nil {
 		t.Errorf("Failed to create video track")
 	}
 	if _, err = apc.AddTrack(video1); err != nil {
 		t.Errorf("Failed to add video track")
 	}
-	video2, err := NewTrack(DefaultPayloadTypeH264, 2, "2", "2", NewRTPH264Codec(DefaultPayloadTypeH264, 90000))
+	video2, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "video/h264", SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"}, "2", "2")
 	if err != nil {
 		t.Errorf("Failed to create video track")
 	}
 	if _, err = apc.AddTrack(video2); err != nil {
 		t.Errorf("Failed to add video track")
 	}
-	audio1, err := NewTrack(DefaultPayloadTypeOpus, 3, "3", "3", NewRTPOpusCodec(DefaultPayloadTypeOpus, 48000))
+	audio1, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "audio/opus"}, "3", "3")
 	if err != nil {
 		t.Errorf("Failed to create audio track")
 	}
 	if _, err = apc.AddTrack(audio1); err != nil {
 		t.Errorf("Failed to add audio track")
 	}
-	audio2, err := NewTrack(DefaultPayloadTypeOpus, 4, "4", "4", NewRTPOpusCodec(DefaultPayloadTypeOpus, 48000))
+	audio2, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "audio/opus"}, "4", "4")
 	if err != nil {
 		t.Errorf("Failed to create audio track")
 	}
@@ -224,8 +222,7 @@ func TestSDPSemantics_PlanBAnswerSenders(t *testing.T) {
 		}
 	}
 
-	assert.NoError(t, apc.Close())
-	assert.NoError(t, opc.Close())
+	closePairNow(t, apc, opc)
 }
 
 func TestSDPSemantics_UnifiedPlanWithFallback(t *testing.T) {
@@ -242,12 +239,12 @@ func TestSDPSemantics_UnifiedPlanWithFallback(t *testing.T) {
 		t.Errorf("NewPeerConnection failed: %v", err)
 	}
 
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeVideo, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionRecvonly,
 	}); err != nil {
 		t.Errorf("Failed to add transceiver")
 	}
-	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RtpTransceiverInit{
+	if _, err = opc.AddTransceiverFromKind(RTPCodecTypeAudio, RTPTransceiverInit{
 		Direction: RTPTransceiverDirectionRecvonly,
 	}); err != nil {
 		t.Errorf("Failed to add transceiver")
@@ -268,28 +265,28 @@ func TestSDPSemantics_UnifiedPlanWithFallback(t *testing.T) {
 		t.Errorf("NewPeerConnection failed: %v", err)
 	}
 
-	video1, err := NewTrack(DefaultPayloadTypeH264, 1, "1", "1", NewRTPH264Codec(DefaultPayloadTypeH264, 90000))
+	video1, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "video/h264", SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"}, "1", "1")
 	if err != nil {
 		t.Errorf("Failed to create video track")
 	}
 	if _, err = apc.AddTrack(video1); err != nil {
 		t.Errorf("Failed to add video track")
 	}
-	video2, err := NewTrack(DefaultPayloadTypeH264, 2, "2", "2", NewRTPH264Codec(DefaultPayloadTypeH264, 90000))
+	video2, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "video/h264", SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"}, "2", "2")
 	if err != nil {
 		t.Errorf("Failed to create video track")
 	}
 	if _, err = apc.AddTrack(video2); err != nil {
 		t.Errorf("Failed to add video track")
 	}
-	audio1, err := NewTrack(DefaultPayloadTypeOpus, 3, "3", "3", NewRTPOpusCodec(DefaultPayloadTypeOpus, 48000))
+	audio1, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "audio/opus"}, "3", "3")
 	if err != nil {
 		t.Errorf("Failed to create audio track")
 	}
 	if _, err = apc.AddTrack(audio1); err != nil {
 		t.Errorf("Failed to add audio track")
 	}
-	audio2, err := NewTrack(DefaultPayloadTypeOpus, 4, "4", "4", NewRTPOpusCodec(DefaultPayloadTypeOpus, 48000))
+	audio2, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "audio/opus"}, "4", "4")
 	if err != nil {
 		t.Errorf("Failed to create audio track")
 	}
@@ -332,6 +329,5 @@ func TestSDPSemantics_UnifiedPlanWithFallback(t *testing.T) {
 		}
 	}
 
-	assert.NoError(t, apc.Close())
-	assert.NoError(t, opc.Close())
+	closePairNow(t, apc, opc)
 }

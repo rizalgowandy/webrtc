@@ -7,19 +7,18 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v3"
-
 	"github.com/pion/webrtc/v3/examples/internal/signal"
 )
 
 func signalCandidate(addr string, c *webrtc.ICECandidate) error {
 	payload := []byte(c.ToJSON().Candidate)
-	resp, err := http.Post(fmt.Sprintf("http://%s/candidate", addr),
+	resp, err := http.Post(fmt.Sprintf("http://%s/candidate", addr), // nolint:noctx
 		"application/json; charset=utf-8", bytes.NewReader(payload))
-
 	if err != nil {
 		return err
 	}
@@ -31,7 +30,7 @@ func signalCandidate(addr string, c *webrtc.ICECandidate) error {
 	return nil
 }
 
-func main() {
+func main() { // nolint:gocognit
 	offerAddr := flag.String("offer-address", "localhost:50000", "Address that the Offer HTTP server is hosted on.")
 	answerAddr := flag.String("answer-address", ":60000", "Address that the Answer HTTP server is hosted on.")
 	flag.Parse()
@@ -54,6 +53,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		if err := peerConnection.Close(); err != nil {
+			fmt.Printf("cannot close peerConnection: %v\n", err)
+		}
+	}()
 
 	// When an ICE candidate is available send to the other Pion instance
 	// the other Pion instance will add this candidate by calling AddICECandidate
@@ -108,7 +112,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		resp, err := http.Post(fmt.Sprintf("http://%s/sdp", *offerAddr), "application/json; charset=utf-8", bytes.NewReader(payload))
+		resp, err := http.Post(fmt.Sprintf("http://%s/sdp", *offerAddr), "application/json; charset=utf-8", bytes.NewReader(payload)) // nolint:noctx
 		if err != nil {
 			panic(err)
 		} else if closeErr := resp.Body.Close(); closeErr != nil {
@@ -131,10 +135,18 @@ func main() {
 		candidatesMux.Unlock()
 	})
 
-	// Set the handler for ICE connection state
+	// Set the handler for Peer connection state
 	// This will notify you when the peer has connected/disconnected
-	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
+
+		if s == webrtc.PeerConnectionStateFailed {
+			// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
+			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
+			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
+			fmt.Println("Peer Connection has gone to failed exiting")
+			os.Exit(0)
+		}
 	})
 
 	// Register data channel creation handling

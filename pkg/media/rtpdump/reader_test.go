@@ -2,6 +2,7 @@ package rtpdump
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"reflect"
@@ -201,8 +202,8 @@ func TestReader(t *testing.T) {
 				0x81, 0xcb, 0x00, 0x0c,
 				0x90, 0x2f, 0x9e, 0x2e,
 				0x03, 0x46, 0x4f, 0x4f,
-				// packet header len=33, pLen=25, off=2
-				0x00, 0x21, 0x19, 0x00,
+				// packet header len=33, pLen=0, off=2
+				0x00, 0x21, 0x00, 0x19,
 				0x00, 0x00, 0x00, 0x02,
 				// packet payload (RTP)
 				0x90, 0x60, 0x69, 0x8f,
@@ -247,7 +248,7 @@ func TestReader(t *testing.T) {
 	} {
 		r, hdr, err := NewReader(bytes.NewReader(test.Data))
 		if err != nil {
-			if got, want := err, test.WantErr; got != want {
+			if got, want := err, test.WantErr; !errors.Is(got, want) {
 				t.Fatalf("NewReader(%s) err=%v want %v", test.Name, got, want)
 			}
 			continue
@@ -272,7 +273,7 @@ func TestReader(t *testing.T) {
 			packets = append(packets, pkt)
 		}
 
-		if got, want := nextErr, test.WantErr; got != want {
+		if got, want := nextErr, test.WantErr; !errors.Is(got, want) {
 			t.Fatalf("%s err=%v want %v", test.Name, got, want)
 		}
 		if got, want := packets, test.WantPackets; !reflect.DeepEqual(got, want) {

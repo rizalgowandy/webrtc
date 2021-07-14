@@ -3,7 +3,6 @@
 package webrtc
 
 import (
-	"errors"
 	"io"
 	"math"
 	"sync"
@@ -42,7 +41,7 @@ type SCTPTransport struct {
 
 	onErrorHandler func(error)
 
-	association                *sctp.Association
+	sctpAssociation            *sctp.Association
 	onDataChannelHandler       func(*DataChannel)
 	onDataChannelOpenedHandler func(*DataChannel)
 
@@ -97,12 +96,13 @@ func (r *SCTPTransport) Start(remoteCaps SCTPCapabilities) error {
 	}
 	r.isStarted = true
 
-	if err := r.ensureDTLS(); err != nil {
-		return err
+	dtlsTransport := r.Transport()
+	if dtlsTransport == nil || dtlsTransport.conn == nil {
+		return errSCTPTransportDTLS
 	}
 
 	sctpAssociation, err := sctp.Client(sctp.Config{
-		NetConn:       r.Transport().conn,
+		NetConn:       dtlsTransport.conn,
 		LoggerFactory: r.api.settingEngine.LoggerFactory,
 	})
 	if err != nil {
@@ -112,7 +112,7 @@ func (r *SCTPTransport) Start(remoteCaps SCTPCapabilities) error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	r.association = sctpAssociation
+	r.sctpAssociation = sctpAssociation
 	r.state = SCTPTransportStateConnected
 
 	go r.acceptDataChannels(sctpAssociation)
@@ -124,25 +124,16 @@ func (r *SCTPTransport) Start(remoteCaps SCTPCapabilities) error {
 func (r *SCTPTransport) Stop() error {
 	r.lock.Lock()
 	defer r.lock.Unlock()
-	if r.association == nil {
+	if r.sctpAssociation == nil {
 		return nil
 	}
-	err := r.association.Close()
+	err := r.sctpAssociation.Close()
 	if err != nil {
 		return err
 	}
 
-	r.association = nil
+	r.sctpAssociation = nil
 	r.state = SCTPTransportStateClosed
-
-	return nil
-}
-
-func (r *SCTPTransport) ensureDTLS() error {
-	dtlsTransport := r.Transport()
-	if dtlsTransport == nil || dtlsTransport.conn == nil {
-		return errors.New("DTLS not established")
-	}
 
 	return nil
 }
@@ -160,10 +151,12 @@ func (r *SCTPTransport) acceptDataChannels(a *sctp.Association) {
 			return
 		}
 
-		var ordered = true
-		var maxRetransmits *uint16
-		var maxPacketLifeTime *uint16
-		var val = uint16(dc.Config.ReliabilityParameter)
+		var (
+			maxRetransmits    *uint16
+			maxPacketLifeTime *uint16
+		)
+		val := uint16(dc.Config.ReliabilityParameter)
+		ordered := true
 
 		switch dc.Config.ChannelType {
 		case datachannel.ChannelTypeReliable:
@@ -195,7 +188,6 @@ func (r *SCTPTransport) acceptDataChannels(a *sctp.Association) {
 			MaxPacketLifeTime: maxPacketLifeTime,
 			MaxRetransmits:    maxRetransmits,
 		}, r.api.settingEngine.LoggerFactory.NewLogger("ortc"))
-
 		if err != nil {
 			r.log.Errorf("Failed to accept data channel: %v", err)
 			r.onError(err)
@@ -328,10 +320,6 @@ func (r *SCTPTransport) State() SCTPTransportState {
 }
 
 func (r *SCTPTransport) collectStats(collector *statsReportCollector) {
-	r.lock.Lock()
-	association := r.association
-	r.lock.Unlock()
-
 	collector.Collecting()
 
 	stats := TransportStats{
@@ -340,6 +328,7 @@ func (r *SCTPTransport) collectStats(collector *statsReportCollector) {
 		ID:        "sctpTransport",
 	}
 
+	association := r.association()
 	if association != nil {
 		stats.BytesSent = association.BytesSent()
 		stats.BytesReceived = association.BytesReceived()
@@ -376,4 +365,14 @@ func (r *SCTPTransport) generateAndSetDataChannelID(dtlsRole DTLSRole, idOut **u
 	}
 
 	return &rtcerr.OperationError{Err: ErrMaxDataChannelID}
+}
+
+func (r *SCTPTransport) association() *sctp.Association {
+	if r == nil {
+		return nil
+	}
+	r.lock.RLock()
+	association := r.sctpAssociation
+	r.lock.RUnlock()
+	return association
 }

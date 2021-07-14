@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+var errReceiveOfferTimeout = fmt.Errorf("timed out waiting to receive offer")
 
 func TestStatsTimestampTime(t *testing.T) {
 	for _, test := range []struct {
@@ -36,7 +39,6 @@ func TestStatsTimestampTime(t *testing.T) {
 	}
 }
 
-// TODO(maxhawkins): replace with a more meaningful test
 func TestStatsMarshal(t *testing.T) {
 	for _, test := range []Stats{
 		AudioReceiverStats{},
@@ -98,6 +100,13 @@ func getDataChannelStats(t *testing.T, report StatsReport, dc *DataChannel) Data
 	return stats
 }
 
+func getCodecStats(t *testing.T, report StatsReport, c *RTPCodecParameters) CodecStats {
+	stats, ok := report.GetCodecStats(c)
+	assert.True(t, ok)
+	assert.Equal(t, stats.Type, StatsTypeCodec)
+	return stats
+}
+
 func getTransportStats(t *testing.T, report StatsReport, statsID string) TransportStats {
 	stats, ok := report[statsID]
 	assert.True(t, ok)
@@ -105,6 +114,13 @@ func getTransportStats(t *testing.T, report StatsReport, statsID string) Transpo
 	assert.True(t, ok)
 	assert.Equal(t, transportStats.Type, StatsTypeTransport)
 	return transportStats
+}
+
+func getCertificateStats(t *testing.T, report StatsReport, certificate *Certificate) CertificateStats {
+	certificateStats, ok := report.GetCertificateStats(certificate)
+	assert.True(t, ok)
+	assert.Equal(t, certificateStats.Type, StatsTypeCertificate)
+	return certificateStats
 }
 
 func findLocalCandidateStats(report StatsReport) []ICECandidateStats {
@@ -160,7 +176,7 @@ func signalPairForStats(pcOffer *PeerConnection, pcAnswer *PeerConnection) error
 	timeout := time.After(3 * time.Second)
 	select {
 	case <-timeout:
-		return fmt.Errorf("timed out waiting to receive offer")
+		return errReceiveOfferTimeout
 	case offer := <-offerChan:
 		if err := pcAnswer.SetRemoteDescription(offer); err != nil {
 			return err
@@ -186,6 +202,12 @@ func signalPairForStats(pcOffer *PeerConnection, pcAnswer *PeerConnection) error
 func TestPeerConnection_GetStats(t *testing.T) {
 	offerPC, answerPC, err := newPair()
 	assert.NoError(t, err)
+
+	track1, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: "video/vp8"}, "video", "pion1")
+	require.NoError(t, err)
+
+	_, err = offerPC.AddTrack(track1)
+	require.NoError(t, err)
 
 	baseLineReportPCOffer := offerPC.GetStats()
 	baseLineReportPCAnswer := answerPC.GetStats()
@@ -255,6 +277,15 @@ func TestPeerConnection_GetStats(t *testing.T) {
 	assert.NotEmpty(t, findLocalCandidateStats(reportPCAnswer))
 	assert.NotEmpty(t, findRemoteCandidateStats(reportPCAnswer))
 	assert.NotEmpty(t, findCandidatePairStats(t, reportPCAnswer))
+	assert.NoError(t, err)
+	for i := range offerPC.api.mediaEngine.videoCodecs {
+		codecStat := getCodecStats(t, reportPCOffer, &(offerPC.api.mediaEngine.videoCodecs[i]))
+		assert.NotEmpty(t, codecStat)
+	}
+	for i := range offerPC.api.mediaEngine.audioCodecs {
+		codecStat := getCodecStats(t, reportPCOffer, &(offerPC.api.mediaEngine.audioCodecs[i]))
+		assert.NotEmpty(t, codecStat)
+	}
 
 	// Close answer DC now
 	dcWait = sync.WaitGroup{}
@@ -295,8 +326,13 @@ func TestPeerConnection_GetStats(t *testing.T) {
 	assert.GreaterOrEqual(t, offerSCTPTransportStats.BytesSent, answerSCTPTransportStats.BytesReceived)
 	assert.GreaterOrEqual(t, answerSCTPTransportStats.BytesSent, offerSCTPTransportStats.BytesReceived)
 
-	assert.NoError(t, offerPC.Close())
-	assert.NoError(t, answerPC.Close())
+	certificates := offerPC.configuration.Certificates
+
+	for i := range certificates {
+		assert.NotEmpty(t, getCertificateStats(t, reportPCOffer, &certificates[i]))
+	}
+
+	closePairNow(t, offerPC, answerPC)
 }
 
 func TestPeerConnection_GetStats_Closed(t *testing.T) {

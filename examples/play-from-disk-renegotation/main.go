@@ -1,3 +1,5 @@
+// +build !js
+
 package main
 
 import (
@@ -8,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pion/randutil"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/ivfreader"
@@ -65,13 +68,30 @@ func createPeerConnection(w http.ResponseWriter, r *http.Request) {
 
 // Add a single video track
 func addVideo(w http.ResponseWriter, r *http.Request) {
-	videoTrack, err := peerConnection.NewTrack(webrtc.DefaultPayloadTypeVP8, rand.Uint32(), fmt.Sprintf("video-%d", rand.Uint32()), fmt.Sprintf("video-%d", rand.Uint32()))
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
+		fmt.Sprintf("video-%d", randutil.NewMathRandomGenerator().Uint32()),
+		fmt.Sprintf("video-%d", randutil.NewMathRandomGenerator().Uint32()),
+	)
 	if err != nil {
 		panic(err)
 	}
-	if _, err = peerConnection.AddTrack(videoTrack); err != nil {
+	rtpSender, err := peerConnection.AddTrack(videoTrack)
+	if err != nil {
 		panic(err)
 	}
+
+	// Read incoming RTCP packets
+	// Before these packets are returned they are processed by interceptors. For things
+	// like NACK this needs to be called.
+	go func() {
+		rtcpBuf := make([]byte, 1500)
+		for {
+			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+				return
+			}
+		}
+	}()
 
 	go writeVideoToTrack(videoTrack)
 	doSignaling(w, r)
@@ -97,11 +117,24 @@ func main() {
 	if peerConnection, err = webrtc.NewPeerConnection(webrtc.Configuration{}); err != nil {
 		panic(err)
 	}
+	defer func() {
+		if cErr := peerConnection.Close(); cErr != nil {
+			fmt.Printf("cannot close peerConnection: %v\n", cErr)
+		}
+	}()
 
-	// Set the handler for ICE connection state
+	// Set the handler for Peer connection state
 	// This will notify you when the peer has connected/disconnected
-	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
+
+		if s == webrtc.PeerConnectionStateFailed {
+			// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
+			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
+			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
+			fmt.Println("Peer Connection has gone to failed exiting")
+			os.Exit(0)
+		}
 	})
 
 	http.Handle("/", http.FileServer(http.Dir(".")))
@@ -109,13 +142,18 @@ func main() {
 	http.HandleFunc("/addVideo", addVideo)
 	http.HandleFunc("/removeVideo", removeVideo)
 
-	fmt.Println("Open http://localhost:8080 to access this demo")
-	panic(http.ListenAndServe(":8080", nil))
+	go func() {
+		fmt.Println("Open http://localhost:8080 to access this demo")
+		panic(http.ListenAndServe(":8080", nil))
+	}()
+
+	// Block forever
+	select {}
 }
 
 // Read a video file from disk and write it to a webrtc.Track
 // When the video has been completely read this exits without error
-func writeVideoToTrack(t *webrtc.Track) {
+func writeVideoToTrack(t *webrtc.TrackLocalStaticSample) {
 	// Open a IVF file and start reading using our IVFReader
 	file, err := os.Open("output.ivf")
 	if err != nil {
@@ -138,7 +176,7 @@ func writeVideoToTrack(t *webrtc.Track) {
 		}
 
 		time.Sleep(sleepTime)
-		if err = t.WriteSample(media.Sample{Data: frame, Samples: 90000}); err != nil {
+		if err = t.WriteSample(media.Sample{Data: frame, Duration: time.Second}); err != nil {
 			fmt.Printf("Finish writing video track: %s ", err)
 			return
 		}

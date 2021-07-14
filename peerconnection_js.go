@@ -6,7 +6,7 @@ package webrtc
 import (
 	"syscall/js"
 
-	"github.com/pion/sdp/v2"
+	"github.com/pion/ice/v2"
 	"github.com/pion/webrtc/v3/pkg/rtcerr"
 )
 
@@ -488,6 +488,40 @@ func (pc *PeerConnection) setGatherCompleteHandler(handler func()) {
 	}
 }
 
+// AddTransceiverFromKind Create a new RtpTransceiver and adds it to the set of transceivers.
+func (pc *PeerConnection) AddTransceiverFromKind(kind RTPCodecType, init ...RTPTransceiverInit) (transceiver *RTPTransceiver, err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = recoveryToError(e)
+		}
+	}()
+
+	if len(init) == 1 {
+		return &RTPTransceiver{
+			underlying: pc.underlying.Call("addTransceiver", kind.String(), rtpTransceiverInitInitToValue(init[0])),
+		}, err
+
+	}
+
+	return &RTPTransceiver{
+		underlying: pc.underlying.Call("addTransceiver", kind.String()),
+	}, err
+}
+
+// GetTransceivers returns the RtpTransceiver that are currently attached to this PeerConnection
+func (pc *PeerConnection) GetTransceivers() (transceivers []*RTPTransceiver) {
+	rawTransceivers := pc.underlying.Call("getTransceivers")
+	transceivers = make([]*RTPTransceiver, rawTransceivers.Length())
+
+	for i := 0; i < rawTransceivers.Length(); i++ {
+		transceivers[i] = &RTPTransceiver{
+			underlying: rawTransceivers.Index(i),
+		}
+	}
+
+	return
+}
+
 // Converts a Configuration to js.Value so it can be passed
 // through to the JavaScript WebRTC API. Any zero values are converted to
 // js.Undefined(), which will result in the default value being used.
@@ -570,15 +604,16 @@ func valueToICECandidate(val js.Value) *ICECandidate {
 	}
 	if jsValueIsUndefined(val.Get("protocol")) && !jsValueIsUndefined(val.Get("candidate")) {
 		// Missing some fields, assume it's Firefox and parse SDP candidate.
-		attribute := sdp.NewAttribute("candidate", val.Get("candidate").String())
-		sdpCandidate, err := attribute.ToICECandidate()
+		c, err := ice.UnmarshalCandidate(val.Get("candidate").String())
 		if err != nil {
 			return nil
 		}
-		iceCandidate, err := newICECandidateFromSDP(sdpCandidate)
+
+		iceCandidate, err := newICECandidateFromICE(c)
 		if err != nil {
 			return nil
 		}
+
 		return &iceCandidate
 	}
 	protocol, _ := NewICEProtocol(val.Get("protocol").String())
@@ -622,7 +657,7 @@ func valueToSessionDescription(descValue js.Value) *SessionDescription {
 		return nil
 	}
 	return &SessionDescription{
-		Type: newSDPType(descValue.Get("type").String()),
+		Type: NewSDPType(descValue.Get("type").String()),
 		SDP:  descValue.Get("sdp").String(),
 	}
 }
@@ -651,7 +686,7 @@ func iceCandidateInitToValue(candidate ICECandidateInit) js.Value {
 		"candidate":        candidate.Candidate,
 		"sdpMid":           stringPointerToValue(candidate.SDPMid),
 		"sdpMLineIndex":    uint16PointerToValue(candidate.SDPMLineIndex),
-		"usernameFragment": candidate.UsernameFragment,
+		"usernameFragment": stringPointerToValue(candidate.UsernameFragment),
 	})
 }
 
@@ -671,5 +706,11 @@ func dataChannelInitToValue(options *DataChannelInit) js.Value {
 		"protocol":          stringPointerToValue(options.Protocol),
 		"negotiated":        boolPointerToValue(options.Negotiated),
 		"id":                uint16PointerToValue(options.ID),
+	})
+}
+
+func rtpTransceiverInitInitToValue(init RTPTransceiverInit) js.Value {
+	return js.ValueOf(map[string]interface{}{
+		"direction": init.Direction.String(),
 	})
 }
