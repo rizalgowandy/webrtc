@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 import (
@@ -11,6 +14,7 @@ func TestNewICETransportPolicy(t *testing.T) {
 		policyString   string
 		expectedPolicy ICETransportPolicy
 	}{
+		{"nohost", ICETransportPolicyNoHost},
 		{"relay", ICETransportPolicyRelay},
 		{"all", ICETransportPolicyAll},
 	}
@@ -29,6 +33,7 @@ func TestICETransportPolicy_String(t *testing.T) {
 		policy         ICETransportPolicy
 		expectedString string
 	}{
+		{ICETransportPolicyNoHost, "nohost"},
 		{ICETransportPolicyRelay, "relay"},
 		{ICETransportPolicyAll, "all"},
 	}

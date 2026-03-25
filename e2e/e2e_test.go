@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+//go:build e2e
 // +build e2e
 
 package main
@@ -5,19 +9,16 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"math/rand"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/sclevine/agouti"
-
-	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media"
 )
 
 var silentOpusFrame = []byte{0xf8, 0xff, 0xfe} // 20ms, 8kHz, mono
@@ -93,8 +94,8 @@ func TestE2E_Audio(t *testing.T) {
 			}
 			var result string
 			if err := page.RunScript(
-				"pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answer)))",
-				map[string]interface{}{"answer": string(answerBytes)},
+				"pc.setRemoteDescription(JSON.parse(answer))",
+				map[string]any{"answer": string(answerBytes)},
 				&result,
 			); err != nil {
 				t.Fatalf("Failed to run script to set SDP: %v", err)
@@ -103,7 +104,7 @@ func TestE2E_Audio(t *testing.T) {
 			go func() {
 				for {
 					if err := track.WriteSample(
-						media.Sample{Data: silentOpusFrame, Samples: 960},
+						media.Sample{Data: silentOpusFrame, Duration: time.Millisecond * 20},
 					); err != nil {
 						t.Errorf("Failed to WriteSample: %v", err)
 						return
@@ -233,8 +234,8 @@ func TestE2E_DataChannel(t *testing.T) {
 			}
 			var result string
 			if err := page.RunScript(
-				"pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answer)))",
-				map[string]interface{}{"answer": string(answerBytes)},
+				"pc.setRemoteDescription(JSON.parse(answer))",
+				map[string]any{"answer": string(answerBytes)},
 				&result,
 			); err != nil {
 				t.Fatalf("Failed to run script to set SDP: %v", err)
@@ -330,28 +331,13 @@ func parseLog(log agouti.Log) (string, string, bool) {
 	return k, v, true
 }
 
-func createTrack(offer webrtc.SessionDescription) (*webrtc.PeerConnection, *webrtc.SessionDescription, *webrtc.Track, error) {
-	mediaEngine := webrtc.MediaEngine{}
-	if err := mediaEngine.PopulateFromSDP(offer); err != nil {
-		return nil, nil, nil, err
-	}
-	var payloadType uint8
-	for _, videoCodec := range mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeAudio) {
-		if videoCodec.Name == webrtc.Opus {
-			payloadType = videoCodec.PayloadType
-			break
-		}
-	}
-	if payloadType == 0 {
-		return nil, nil, nil, errors.New("Remote peer does not support VP8")
-	}
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
-	pc, errPc := api.NewPeerConnection(webrtc.Configuration{})
+func createTrack(offer webrtc.SessionDescription) (*webrtc.PeerConnection, *webrtc.SessionDescription, *webrtc.TrackLocalStaticSample, error) {
+	pc, errPc := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if errPc != nil {
 		return nil, nil, nil, errPc
 	}
 
-	track, errTrack := pc.NewTrack(payloadType, rand.Uint32(), "video", "pion")
+	track, errTrack := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if errTrack != nil {
 		return nil, nil, nil, errTrack
 	}

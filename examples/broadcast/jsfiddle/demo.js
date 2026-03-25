@@ -1,10 +1,14 @@
 /* eslint-env browser */
-var log = msg => {
+
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+const log = msg => {
   document.getElementById('logs').innerHTML += msg + '<br>'
 }
 
 window.createSession = isPublisher => {
-  let pc = new RTCPeerConnection({
+  const pc = new RTCPeerConnection({
     iceServers: [
       {
         urls: 'stun:stun.l.google.com:19302'
@@ -21,7 +25,8 @@ window.createSession = isPublisher => {
   if (isPublisher) {
     navigator.mediaDevices.getUserMedia({ video: true, audio: false })
       .then(stream => {
-        pc.addStream(document.getElementById('video1').srcObject = stream)
+        stream.getTracks().forEach(track => pc.addTrack(track, stream))
+        document.getElementById('video1').srcObject = stream
         pc.createOffer()
           .then(d => pc.setLocalDescription(d))
           .catch(log)
@@ -33,7 +38,7 @@ window.createSession = isPublisher => {
       .catch(log)
 
     pc.ontrack = function (event) {
-      var el = document.getElementById('video1')
+      const el = document.getElementById('video1')
       el.srcObject = event.streams[0]
       el.autoplay = true
       el.controls = true
@@ -41,19 +46,34 @@ window.createSession = isPublisher => {
   }
 
   window.startSession = () => {
-    let sd = document.getElementById('remoteSessionDescription').value
+    const sd = document.getElementById('remoteSessionDescription').value
     if (sd === '') {
       return alert('Session Description must not be empty')
     }
 
     try {
-      pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(atob(sd))))
+      pc.setRemoteDescription(JSON.parse(atob(sd)))
     } catch (e) {
       alert(e)
     }
   }
 
-  let btns = document.getElementsByClassName('createSessionButton')
+  window.copySDP = () => {
+    const browserSDP = document.getElementById('localSessionDescription')
+
+    browserSDP.focus()
+    browserSDP.select()
+
+    try {
+      const successful = document.execCommand('copy')
+      const msg = successful ? 'successful' : 'unsuccessful'
+      log('Copying SDP was ' + msg)
+    } catch (err) {
+      log('Unable to copy SDP ' + err)
+    }
+  }
+
+  const btns = document.getElementsByClassName('createSessionButton')
   for (let i = 0; i < btns.length; i++) {
     btns[i].style = 'display: none'
   }

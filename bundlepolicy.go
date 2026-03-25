@@ -1,4 +1,11 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
+
+import (
+	"encoding/json"
+)
 
 // BundlePolicy affects which media tracks are negotiated if the remote
 // endpoint is not bundle-aware, and what ICE candidates are gathered. If the
@@ -7,11 +14,14 @@ package webrtc
 type BundlePolicy int
 
 const (
+	// BundlePolicyUnknown is the enum's zero-value.
+	BundlePolicyUnknown BundlePolicy = iota
+
 	// BundlePolicyBalanced indicates to gather ICE candidates for each
 	// media type in use (audio, video, and data). If the remote endpoint is
 	// not bundle-aware, negotiate only one audio and video track on separate
 	// transports.
-	BundlePolicyBalanced BundlePolicy = iota + 1
+	BundlePolicyBalanced
 
 	// BundlePolicyMaxCompat indicates to gather ICE candidates for each
 	// track. If the remote endpoint is not bundle-aware, negotiate all media
@@ -40,7 +50,7 @@ func newBundlePolicy(raw string) BundlePolicy {
 	case bundlePolicyMaxBundleStr:
 		return BundlePolicyMaxBundle
 	default:
-		return BundlePolicy(Unknown)
+		return BundlePolicyUnknown
 	}
 }
 
@@ -55,4 +65,21 @@ func (t BundlePolicy) String() string {
 	default:
 		return ErrUnknownType.Error()
 	}
+}
+
+// UnmarshalJSON parses the JSON-encoded data and stores the result.
+func (t *BundlePolicy) UnmarshalJSON(b []byte) error {
+	var val string
+	if err := json.Unmarshal(b, &val); err != nil {
+		return err
+	}
+
+	*t = newBundlePolicy(val)
+
+	return nil
+}
+
+// MarshalJSON returns the JSON encoding.
+func (t BundlePolicy) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.String())
 }

@@ -1,15 +1,18 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 // Package oggwriter implements OGG media container writer
 package oggwriter
 
 import (
 	"encoding/binary"
-	"fmt"
+	"errors"
 	"io"
-	"math/rand"
 	"os"
 
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
+	"github.com/pion/webrtc/v4/internal/util"
 )
 
 const (
@@ -22,7 +25,12 @@ const (
 	pageHeaderSignature                = "OggS"
 )
 
-// OggWriter is used to take RTP packets and write them to an OGG on disk
+var (
+	errFileNotOpened    = errors.New("file not opened")
+	errInvalidNilPacket = errors.New("invalid nil packet")
+)
+
+// OggWriter is used to take RTP packets and write them to an OGG on disk.
 type OggWriter struct {
 	stream                  io.Writer
 	fd                      *os.File
@@ -36,31 +44,32 @@ type OggWriter struct {
 	lastPayloadSize         int
 }
 
-// New builds a new OGG Opus writer
+// New builds a new OGG Opus writer.
 func New(fileName string, sampleRate uint32, channelCount uint16) (*OggWriter, error) {
-	f, err := os.Create(fileName)
+	file, err := os.Create(fileName) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}
-	writer, err := NewWith(f, sampleRate, channelCount)
+	writer, err := NewWith(file, sampleRate, channelCount)
 	if err != nil {
-		return nil, f.Close()
+		return nil, file.Close()
 	}
-	writer.fd = f
+	writer.fd = file
+
 	return writer, nil
 }
 
-// NewWith initialize a new OGG Opus writer with an io.Writer output
+// NewWith initialize a new OGG Opus writer with an io.Writer output.
 func NewWith(out io.Writer, sampleRate uint32, channelCount uint16) (*OggWriter, error) {
 	if out == nil {
-		return nil, fmt.Errorf("file not opened")
+		return nil, errFileNotOpened
 	}
 
 	writer := &OggWriter{
 		stream:        out,
 		sampleRate:    sampleRate,
 		channelCount:  channelCount,
-		serial:        rand.Uint32(),
+		serial:        util.RandUint32(),
 		checksumTable: generateChecksumTable(),
 
 		// Timestamp and Granule MUST start from 1
@@ -102,8 +111,9 @@ func (i *OggWriter) writeHeaders() error {
 	// ID Header
 	oggIDHeader := make([]byte, 19)
 
-	copy(oggIDHeader[0:], []byte(idPageSignature))                  // Magic Signature 'OpusHead'
-	oggIDHeader[8] = 1                                              // Version
+	copy(oggIDHeader[0:], idPageSignature) // Magic Signature 'OpusHead'
+	oggIDHeader[8] = 1                     // Version
+	//nolint:gosec // G115
 	oggIDHeader[9] = uint8(i.channelCount)                          // Channel count
 	binary.LittleEndian.PutUint16(oggIDHeader[10:], defaultPreSkip) // pre-skip
 	binary.LittleEndian.PutUint32(oggIDHeader[12:], i.sampleRate)   // original sample rate, any valid sample e.g 48000
@@ -120,10 +130,10 @@ func (i *OggWriter) writeHeaders() error {
 
 	// Comment Header
 	oggCommentHeader := make([]byte, 21)
-	copy(oggCommentHeader[0:], []byte(commentPageSignature)) // Magic Signature 'OpusTags'
-	binary.LittleEndian.PutUint32(oggCommentHeader[8:], 5)   // Vendor Length
-	copy(oggCommentHeader[12:], []byte("pion"))              // Vendor name 'pion'
-	binary.LittleEndian.PutUint32(oggCommentHeader[17:], 0)  // User Comment List Length
+	copy(oggCommentHeader[0:], commentPageSignature)        // Magic Signature 'OpusTags'
+	binary.LittleEndian.PutUint32(oggCommentHeader[8:], 5)  // Vendor Length
+	copy(oggCommentHeader[12:], "pion")                     // Vendor name 'pion'
+	binary.LittleEndian.PutUint32(oggCommentHeader[17:], 0) // User Comment List Length
 
 	// RFC specifies that the page where the CommentHeader completes should have a granule position of 0
 	data = i.createPage(oggCommentHeader, pageHeaderTypeContinuationOfStream, 0, i.pageIndex)
@@ -141,31 +151,47 @@ const (
 
 func (i *OggWriter) createPage(payload []uint8, headerType uint8, granulePos uint64, pageIndex uint32) []byte {
 	i.lastPayloadSize = len(payload)
-	page := make([]byte, pageHeaderSize+1+i.lastPayloadSize)
+	nSegments := (len(payload) / 255) + 1 // A segment can be at most 255 bytes long.
 
-	copy(page[0:], []byte(pageHeaderSignature))         // page headers starts with 'OggS'
+	page := make([]byte, pageHeaderSize+i.lastPayloadSize+nSegments)
+
+	copy(page[0:], pageHeaderSignature)                 // page headers starts with 'OggS'
 	page[4] = 0                                         // Version
 	page[5] = headerType                                // 1 = continuation, 2 = beginning of stream, 4 = end of stream
 	binary.LittleEndian.PutUint64(page[6:], granulePos) // granule position
 	binary.LittleEndian.PutUint32(page[14:], i.serial)  // Bitstream serial number
 	binary.LittleEndian.PutUint32(page[18:], pageIndex) // Page sequence number
-	page[26] = 1                                        // Number of segments in page, giving always 1 segment
-	page[27] = uint8(i.lastPayloadSize)                 // Segment Table inserting at 27th position since page header length is 27
-	copy(page[28:], payload)                            // inserting at 28th since Segment Table(1) + header length(27)
+	//nolint:gosec // G115
+	page[26] = uint8(nSegments) // Number of segments in page.
+
+	// Filling segment table with the lacing values.
+	// First (nSegments - 1) values will always be 255.
+	for i := 0; i < nSegments-1; i++ {
+		page[pageHeaderSize+i] = 255
+	}
+	// The last value will be the remainder.
+	page[pageHeaderSize+nSegments-1] = uint8(len(payload) % 255) //nolint:gosec // G115
+
+	copy(page[pageHeaderSize+nSegments:], payload) // Payload goes after the segment table, so at pageHeaderSize+nSegments.
 
 	var checksum uint32
 	for index := range page {
 		checksum = (checksum << 8) ^ i.checksumTable[byte(checksum>>24)^page[index]]
 	}
-	binary.LittleEndian.PutUint32(page[22:], checksum) // Checksum - generating for page data and inserting at 22th position into 32 bits
+
+	// Checksum - generating for page data and inserting at 22th position into 32 bits
+	binary.LittleEndian.PutUint32(page[22:], checksum)
 
 	return page
 }
 
-// WriteRTP adds a new packet and writes the appropriate headers for it
+// WriteRTP adds a new packet and writes the appropriate headers for it.
 func (i *OggWriter) WriteRTP(packet *rtp.Packet) error {
 	if packet == nil {
-		return fmt.Errorf("packet must not be nil")
+		return errInvalidNilPacket
+	}
+	if len(packet.Payload) == 0 {
+		return nil
 	}
 
 	opusPacket := codecs.OpusPacket{}
@@ -177,7 +203,7 @@ func (i *OggWriter) WriteRTP(packet *rtp.Packet) error {
 	payload := opusPacket.Payload[0:]
 
 	// Should be equivalent to sampleRate * duration
-	if i.previousTimestamp != 0 {
+	if i.previousTimestamp != 1 {
 		increment := packet.Timestamp - i.previousTimestamp
 		i.previousGranulePosition += uint64(increment)
 	}
@@ -185,10 +211,11 @@ func (i *OggWriter) WriteRTP(packet *rtp.Packet) error {
 
 	data := i.createPage(payload, pageHeaderTypeContinuationOfStream, i.previousGranulePosition, i.pageIndex)
 	i.pageIndex++
+
 	return i.writeToStream(data)
 }
 
-// Close stops the recording
+// Close stops the recording.
 func (i *OggWriter) Close() error {
 	defer func() {
 		i.fd = nil
@@ -202,6 +229,7 @@ func (i *OggWriter) Close() error {
 		if closer, ok := i.stream.(io.Closer); ok {
 			return closer.Close()
 		}
+
 		return nil
 	}
 
@@ -227,13 +255,14 @@ func (i *OggWriter) Close() error {
 }
 
 // Wraps writing to the stream and maintains state
-// so we can set values for EOS
+// so we can set values for EOS.
 func (i *OggWriter) writeToStream(p []byte) error {
 	if i.stream == nil {
-		return fmt.Errorf("file not opened")
+		return errFileNotOpened
 	}
 
 	_, err := i.stream.Write(p)
+
 	return err
 }
 
@@ -242,15 +271,16 @@ func generateChecksumTable() *[256]uint32 {
 	const poly = 0x04c11db7
 
 	for i := range table {
-		r := uint32(i) << 24
-		for j := 0; j < 8; j++ {
-			if (r & 0x80000000) != 0 {
-				r = (r << 1) ^ poly
+		remainder := uint32(i) << 24 //nolint:gosec // G115
+		for range 8 {
+			if (remainder & 0x80000000) != 0 {
+				remainder = (remainder << 1) ^ poly
 			} else {
-				r <<= 1
+				remainder <<= 1
 			}
-			table[i] = (r & 0xffffffff)
 		}
+		table[i] = (remainder & 0xffffffff) //nolint:gosec // no out of bounds access here.
 	}
+
 	return &table
 }

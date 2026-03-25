@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 import (
@@ -12,7 +15,7 @@ func TestICECandidateType(t *testing.T) {
 		shouldFail   bool
 		expectedType ICECandidateType
 	}{
-		{unknownStr, true, ICECandidateType(Unknown)},
+		{ErrUnknownType.Error(), true, ICECandidateTypeUnknown},
 		{"host", false, ICECandidateTypeHost},
 		{"srflx", false, ICECandidateTypeSrflx},
 		{"prflx", false, ICECandidateTypePrflx},
@@ -21,8 +24,10 @@ func TestICECandidateType(t *testing.T) {
 
 	for i, testCase := range testCases {
 		actual, err := NewICECandidateType(testCase.typeString)
-		if (err != nil) != testCase.shouldFail {
-			t.Error(err)
+		if testCase.shouldFail {
+			assert.Error(t, err, "testCase: %d %v", i, testCase)
+		} else {
+			assert.NoError(t, err, "testCase: %d %v", i, testCase)
 		}
 		assert.Equal(t,
 			testCase.expectedType,
@@ -37,7 +42,7 @@ func TestICECandidateType_String(t *testing.T) {
 		cType          ICECandidateType
 		expectedString string
 	}{
-		{ICECandidateType(Unknown), unknownStr},
+		{ICECandidateTypeUnknown, ErrUnknownType.Error()},
 		{ICECandidateTypeHost, "host"},
 		{ICECandidateTypeSrflx, "srflx"},
 		{ICECandidateTypePrflx, "prflx"},

@@ -1,8 +1,7 @@
 #!/bin/bash
-# Copyright 2018 The Go Authors. All rights reserved.
-# Use of this source code is governed by a BSD-style
-# license that can be found in the LICENSE file.
-# Modified work copyright 2019 Alex Browne.
+# SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+# SPDX-FileCopyrightText: 2019 Alex Browne
+# SPDX-License-Identifier: MIT
 
 # Check Node.js version
 if [[ $(node --version) =~ v[0-9]\. ]]
@@ -19,5 +18,13 @@ while [ -h "$SOURCE" ]; do
 done
 DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
 
-# We changed this line to require our node_shim.js.
-exec node --require="${DIR}/node_shim.js" "$(go env GOROOT)/misc/wasm/wasm_exec.js" "$@"
+NODE_WASM_EXEC="$(go env GOROOT)/lib/wasm/wasm_exec_node.js"
+WASM_EXEC="$(go env GOROOT)/lib/wasm/wasm_exec.js"
+
+if test -f "$NODE_WASM_EXEC"; then
+	exec node --require="${DIR}/node_shim.js" "$NODE_WASM_EXEC" "$@"
+else
+	exec node --require="${DIR}/node_shim.js" "$WASM_EXEC" "$@"
+fi
+
+

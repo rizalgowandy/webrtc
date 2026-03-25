@@ -1,8 +1,12 @@
-FROM golang:1.14-alpine3.11
+# SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+# SPDX-License-Identifier: MIT
+
+FROM golang:1.26-alpine
 
 RUN apk add --no-cache \
   chromium \
-  chromium-chromedriver
+  chromium-chromedriver \
+  git
 
 ENV CGO_ENABLED=0
 

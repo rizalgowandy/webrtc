@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 // OAuthCredential represents OAuth credential information which is used by
@@ -11,5 +14,5 @@ type OAuthCredential struct {
 
 	// AccessToken is a base64-encoded format. This is an encrypted
 	// self-contained token that is opaque to the application.
-	AccessToken string
+	AccessToken string //nolint:gosec // not a secret.
 }

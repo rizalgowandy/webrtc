@@ -1,13 +1,16 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 import (
 	"fmt"
+	"strings"
 
-	"github.com/pion/ice/v2"
-	"github.com/pion/sdp/v2"
+	"github.com/pion/ice/v4"
 )
 
-// ICECandidate represents a ice candidate
+// ICECandidate represents a ice candidate.
 type ICECandidate struct {
 	statsID        string
 	Foundation     string           `json:"foundation"`
@@ -20,15 +23,21 @@ type ICECandidate struct {
 	RelatedAddress string           `json:"relatedAddress"`
 	RelatedPort    uint16           `json:"relatedPort"`
 	TCPType        string           `json:"tcpType"`
+	SDPMid         string           `json:"sdpMid"`
+	SDPMLineIndex  uint16           `json:"sdpMLineIndex"`
+	extensions     string
 }
 
-// Conversion for package ice
-
-func newICECandidatesFromICE(iceCandidates []ice.Candidate) ([]ICECandidate, error) {
+// Conversion for package ice.
+func newICECandidatesFromICE(
+	iceCandidates []ice.Candidate,
+	sdpMid string,
+	sdpMLineIndex uint16,
+) ([]ICECandidate, error) {
 	candidates := []ICECandidate{}
 
 	for _, i := range iceCandidates {
-		c, err := newICECandidateFromICE(i)
+		c, err := newICECandidateFromICE(i, sdpMid, sdpMLineIndex)
 		if err != nil {
 			return nil, err
 		}
@@ -38,37 +47,42 @@ func newICECandidatesFromICE(iceCandidates []ice.Candidate) ([]ICECandidate, err
 	return candidates, nil
 }
 
-func newICECandidateFromICE(i ice.Candidate) (ICECandidate, error) {
-	typ, err := convertTypeFromICE(i.Type())
+func newICECandidateFromICE(candidate ice.Candidate, sdpMid string, sdpMLineIndex uint16) (ICECandidate, error) {
+	typ, err := convertTypeFromICE(candidate.Type())
 	if err != nil {
 		return ICECandidate{}, err
 	}
-	protocol, err := NewICEProtocol(i.NetworkType().NetworkShort())
+	protocol, err := NewICEProtocol(candidate.NetworkType().NetworkShort())
 	if err != nil {
 		return ICECandidate{}, err
 	}
 
-	c := ICECandidate{
-		statsID:    i.ID(),
-		Foundation: "foundation",
-		Priority:   i.Priority(),
-		Address:    i.Address(),
-		Protocol:   protocol,
-		Port:       uint16(i.Port()),
-		Component:  i.Component(),
-		Typ:        typ,
-		TCPType:    i.TCPType().String(),
+	newCandidate := ICECandidate{
+		statsID:       candidate.ID(),
+		Foundation:    candidate.Foundation(),
+		Priority:      candidate.Priority(),
+		Address:       candidate.Address(),
+		Protocol:      protocol,
+		Port:          uint16(candidate.Port()), //nolint:gosec // G115
+		Component:     candidate.Component(),
+		Typ:           typ,
+		TCPType:       candidate.TCPType().String(),
+		SDPMid:        sdpMid,
+		SDPMLineIndex: sdpMLineIndex,
 	}
 
-	if i.RelatedAddress() != nil {
-		c.RelatedAddress = i.RelatedAddress().Address
-		c.RelatedPort = uint16(i.RelatedAddress().Port)
+	newCandidate.setExtensions(candidate.Extensions())
+
+	if candidate.RelatedAddress() != nil {
+		newCandidate.RelatedAddress = candidate.RelatedAddress().Address
+		newCandidate.RelatedPort = uint16(candidate.RelatedAddress().Port) //nolint:gosec // G115
 	}
 
-	return c, nil
+	return newCandidate, nil
 }
 
-func (c ICECandidate) toICE() (ice.Candidate, error) {
+// ToICE converts ICECandidate to ice.Candidate.
+func (c ICECandidate) ToICE() (cand ice.Candidate, err error) {
 	candidateID := c.statsID
 	switch c.Typ {
 	case ICECandidateTypeHost:
@@ -79,8 +93,11 @@ func (c ICECandidate) toICE() (ice.Candidate, error) {
 			Port:        int(c.Port),
 			Component:   c.Component,
 			TCPType:     ice.NewTCPType(c.TCPType),
+			Foundation:  c.Foundation,
+			Priority:    c.Priority,
 		}
-		return ice.NewCandidateHost(&config)
+
+		cand, err = ice.NewCandidateHost(&config)
 	case ICECandidateTypeSrflx:
 		config := ice.CandidateServerReflexiveConfig{
 			CandidateID: candidateID,
@@ -88,10 +105,13 @@ func (c ICECandidate) toICE() (ice.Candidate, error) {
 			Address:     c.Address,
 			Port:        int(c.Port),
 			Component:   c.Component,
+			Foundation:  c.Foundation,
+			Priority:    c.Priority,
 			RelAddr:     c.RelatedAddress,
 			RelPort:     int(c.RelatedPort),
 		}
-		return ice.NewCandidateServerReflexive(&config)
+
+		cand, err = ice.NewCandidateServerReflexive(&config)
 	case ICECandidateTypePrflx:
 		config := ice.CandidatePeerReflexiveConfig{
 			CandidateID: candidateID,
@@ -99,10 +119,13 @@ func (c ICECandidate) toICE() (ice.Candidate, error) {
 			Address:     c.Address,
 			Port:        int(c.Port),
 			Component:   c.Component,
+			Foundation:  c.Foundation,
+			Priority:    c.Priority,
 			RelAddr:     c.RelatedAddress,
 			RelPort:     int(c.RelatedPort),
 		}
-		return ice.NewCandidatePeerReflexive(&config)
+
+		cand, err = ice.NewCandidatePeerReflexive(&config)
 	case ICECandidateTypeRelay:
 		config := ice.CandidateRelayConfig{
 			CandidateID: candidateID,
@@ -110,13 +133,73 @@ func (c ICECandidate) toICE() (ice.Candidate, error) {
 			Address:     c.Address,
 			Port:        int(c.Port),
 			Component:   c.Component,
+			Foundation:  c.Foundation,
+			Priority:    c.Priority,
 			RelAddr:     c.RelatedAddress,
 			RelPort:     int(c.RelatedPort),
 		}
-		return ice.NewCandidateRelay(&config)
+
+		cand, err = ice.NewCandidateRelay(&config)
 	default:
-		return nil, fmt.Errorf("unknown candidate type: %s", c.Typ)
+		return nil, fmt.Errorf("%w: %s", errICECandidateTypeUnknown, c.Typ)
 	}
+
+	if cand != nil && err == nil {
+		err = c.exportExtensions(cand)
+	}
+
+	return cand, err
+}
+
+func (c *ICECandidate) setExtensions(ext []ice.CandidateExtension) {
+	var extensions strings.Builder
+
+	for i := range ext {
+		if i > 0 {
+			extensions.WriteString(" ")
+		}
+
+		extensions.WriteString(ext[i].Key + " " + ext[i].Value)
+	}
+
+	c.extensions = extensions.String()
+}
+
+func (c *ICECandidate) exportExtensions(cand ice.Candidate) error {
+	extensions := c.extensions
+	var ext ice.CandidateExtension
+	var field string
+
+	for i, start := 0, 0; i < len(extensions); i++ {
+		switch {
+		case extensions[i] == ' ':
+			field = extensions[start:i]
+			start = i + 1
+		case i == len(extensions)-1:
+			field = extensions[start:]
+		default:
+			continue
+		}
+
+		// Extension keys can't be empty
+		hasKey := ext.Key != ""
+		if !hasKey {
+			ext.Key = field
+		} else {
+			ext.Value = field
+		}
+
+		// Extension value can be empty
+		if hasKey || i == len(extensions)-1 {
+			if err := cand.AddExtension(ext); err != nil {
+				return err
+			}
+
+			ext = ice.CandidateExtension{}
+		}
+	}
+
+	return nil
 }
 
 func convertTypeFromICE(t ice.CandidateType) (ICECandidateType, error) {
@@ -130,85 +213,32 @@ func convertTypeFromICE(t ice.CandidateType) (ICECandidateType, error) {
 	case ice.CandidateTypeRelay:
 		return ICECandidateTypeRelay, nil
 	default:
-		return ICECandidateType(t), fmt.Errorf("unknown ICE candidate type: %s", t)
+		return ICECandidateType(t), fmt.Errorf("%w: %s", errICECandidateTypeUnknown, t)
 	}
 }
 
 func (c ICECandidate) String() string {
-	ic, err := c.toICE()
+	ic, err := c.ToICE()
 	if err != nil {
 		return fmt.Sprintf("%#v failed to convert to ICE: %s", c, err)
 	}
+
 	return ic.String()
-}
-
-func iceCandidateToSDP(c ICECandidate) sdp.ICECandidate {
-	var extensions []sdp.ICECandidateAttribute
-
-	if c.Protocol == ICEProtocolTCP && c.TCPType != "" {
-		extensions = append(extensions, sdp.ICECandidateAttribute{
-			Key:   "tcptype",
-			Value: c.TCPType,
-		})
-	}
-
-	return sdp.ICECandidate{
-		Foundation:          c.Foundation,
-		Priority:            c.Priority,
-		Address:             c.Address,
-		Protocol:            c.Protocol.String(),
-		Port:                c.Port,
-		Component:           c.Component,
-		Typ:                 c.Typ.String(),
-		RelatedAddress:      c.RelatedAddress,
-		RelatedPort:         c.RelatedPort,
-		ExtensionAttributes: extensions,
-	}
-}
-
-func newICECandidateFromSDP(c sdp.ICECandidate) (ICECandidate, error) {
-	typ, err := NewICECandidateType(c.Typ)
-	if err != nil {
-		return ICECandidate{}, err
-	}
-	protocol, err := NewICEProtocol(c.Protocol)
-	if err != nil {
-		return ICECandidate{}, err
-	}
-
-	var tcpType string
-	if protocol == ICEProtocolTCP {
-		for _, attr := range c.ExtensionAttributes {
-			if attr.Key == "tcptype" {
-				tcpType = attr.Value
-				break
-			}
-		}
-	}
-
-	return ICECandidate{
-		Foundation:     c.Foundation,
-		Priority:       c.Priority,
-		Address:        c.Address,
-		Protocol:       protocol,
-		Port:           c.Port,
-		Component:      c.Component,
-		Typ:            typ,
-		RelatedAddress: c.RelatedAddress,
-		RelatedPort:    c.RelatedPort,
-		TCPType:        tcpType,
-	}, nil
 }
 
 // ToJSON returns an ICECandidateInit
 // as indicated by the spec https://w3c.github.io/webrtc-pc/#dom-rtcicecandidate-tojson
 func (c ICECandidate) ToJSON() ICECandidateInit {
-	zeroVal := uint16(0)
-	emptyStr := ""
+	candidateStr := ""
+
+	candidate, err := c.ToICE()
+	if err == nil {
+		candidateStr = candidate.Marshal()
+	}
 
 	return ICECandidateInit{
-		Candidate:     fmt.Sprintf("candidate:%s", iceCandidateToSDP(c).Marshal()),
-		SDPMid:        &emptyStr,
-		SDPMLineIndex: &zeroVal,
+		Candidate:     fmt.Sprintf("candidate:%s", candidateStr),
+		SDPMid:        &c.SDPMid,
+		SDPMLineIndex: &c.SDPMLineIndex,
 	}
 }

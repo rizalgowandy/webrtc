@@ -1,7 +1,9 @@
-FROM golang:1.14
+# SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+# SPDX-License-Identifier: MIT
 
-ENV GO111MODULE=on
-RUN go get -u github.com/pion/webrtc/v3/examples/pion-to-pion/answer
+FROM golang:1.26
+
+RUN go install github.com/pion/webrtc/v4/examples/pion-to-pion/answer@latest
 
 CMD ["answer"]
 

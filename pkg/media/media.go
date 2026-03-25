@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 // Package media provides media writer and filters
 package media
 
@@ -7,21 +10,22 @@ import (
 	"github.com/pion/rtp"
 )
 
-// A Sample contains encoded media and the number of samples in that media (see NSamples).
+// A Sample contains encoded media and timing information.
 type Sample struct {
-	Data    []byte
-	Samples uint32
-}
+	Data               []byte
+	Timestamp          time.Time
+	Duration           time.Duration
+	PacketTimestamp    uint32
+	PrevDroppedPackets uint16
+	Metadata           any
 
-// NSamples calculates the number of samples in media of length d with sampling frequency f.
-// For example, NSamples(20 * time.Millisecond, 48000) will return the number of samples
-// in a 20 millisecond segment of Opus audio recorded at 48000 samples per second.
-func NSamples(d time.Duration, freq int) uint32 {
-	return uint32(time.Duration(freq) * d / time.Second)
+	// RTP headers of RTP packets forming this Sample. (Optional)
+	// Useful for accessing RTP extensions associated to the Sample.
+	RTPHeaders []*rtp.Header
 }
 
 // Writer defines an interface to handle
-// the creation of media files
+// the creation of media files.
 type Writer interface {
 	// Add the content of an RTP packet to the media
 	WriteRTP(packet *rtp.Packet) error

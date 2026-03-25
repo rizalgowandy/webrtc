@@ -1,10 +1,13 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 import (
 	"fmt"
 	"testing"
 
-	"github.com/pion/sdp/v2"
+	"github.com/pion/sdp/v3"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,7 +16,7 @@ func TestDTLSRole_String(t *testing.T) {
 		role           DTLSRole
 		expectedString string
 	}{
-		{DTLSRole(Unknown), unknownStr},
+		{DTLSRoleUnknown, ErrUnknownType.Error()},
 		{DTLSRoleAuto, "auto"},
 		{DTLSRoleClient, "client"},
 		{DTLSRoleServer, "server"},
@@ -28,12 +31,11 @@ func TestDTLSRole_String(t *testing.T) {
 	}
 }
 
-func TestDTLSRoleFromRemoteSDP(t *testing.T) {
+func TestDTLSRoleFromSDP(t *testing.T) {
 	parseSDP := func(raw string) *sdp.SessionDescription {
 		parsed := &sdp.SessionDescription{}
-		if err := parsed.Unmarshal([]byte(raw)); err != nil {
-			panic(err)
-		}
+		assert.NoError(t, parsed.Unmarshal([]byte(raw)))
+
 		return parsed
 	}
 
@@ -75,7 +77,7 @@ a=setup:%s
 	for _, testCase := range testCases {
 		assert.Equal(t,
 			testCase.expectedRole,
-			dtlsRoleFromRemoteSDP(testCase.sessionDescription),
+			dtlsRoleFromSDP(testCase.sessionDescription),
 			"TestDTLSRoleFromSDP (%s)", testCase.test,
 		)
 	}

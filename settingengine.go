@@ -1,15 +1,27 @@
-// +build !js
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+//go:build !js
 
 package webrtc
 
 import (
+	"context"
+	"crypto/x509"
 	"errors"
+	"io"
+	"net"
 	"time"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/dtls/v3"
+	dtlsElliptic "github.com/pion/dtls/v3/pkg/crypto/elliptic"
+	"github.com/pion/dtls/v3/pkg/protocol/handshake"
+	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
-	"github.com/pion/sdp/v2"
-	"github.com/pion/transport/vnet"
+	"github.com/pion/stun/v3"
+	"github.com/pion/transport/v4"
+	"github.com/pion/transport/v4/packetio"
+	"golang.org/x/net/proxy"
 )
 
 // SettingEngine allows influencing behavior in ways that are not
@@ -31,32 +43,170 @@ type SettingEngine struct {
 		ICESrflxAcceptanceMinWait *time.Duration
 		ICEPrflxAcceptanceMinWait *time.Duration
 		ICERelayAcceptanceMinWait *time.Duration
+		ICESTUNGatherTimeout      *time.Duration
 	}
-	candidates struct {
-		ICELite                        bool
-		ICENetworkTypes                []NetworkType
-		InterfaceFilter                func(string) bool
-		NAT1To1IPs                     []string
-		NAT1To1IPCandidateType         ICECandidateType
-		GenerateMulticastDNSCandidates bool
-		MulticastDNSHostName           string
-		UsernameFragment               string
-		Password                       string
+	renomination renominationSettings
+	candidates   struct {
+		ICELite                  bool
+		ICENetworkTypes          []NetworkType
+		InterfaceFilter          func(string) (keep bool)
+		IPFilter                 func(net.IP) (keep bool)
+		RemoteIPFilter           func(net.IP) (keep bool)
+		NAT1To1IPs               []string
+		NAT1To1IPCandidateType   ICECandidateType
+		addressRewriteRules      []ice.AddressRewriteRule
+		MulticastDNSMode         ice.MulticastDNSMode
+		MulticastDNSHostName     string
+		UsernameFragment         string
+		Password                 string //nolint:gosec // not a secret.
+		IncludeLoopbackCandidate bool
 	}
 	replayProtection struct {
 		DTLS  *uint
 		SRTP  *uint
 		SRTCP *uint
 	}
+	dtls struct {
+		insecureSkipHelloVerify       bool
+		disableInsecureSkipVerify     bool
+		retransmissionInterval        time.Duration
+		ellipticCurves                []dtlsElliptic.Curve
+		connectContextMaker           func() (context.Context, func())
+		extendedMasterSecret          dtls.ExtendedMasterSecretType
+		clientAuth                    *dtls.ClientAuthType
+		clientCAs                     *x509.CertPool
+		rootCAs                       *x509.CertPool
+		keyLogWriter                  io.Writer
+		cipherSuites                  []dtls.CipherSuiteID
+		customCipherSuites            func() []dtls.CipherSuite
+		clientHelloMessageHook        func(handshake.MessageClientHello) handshake.Message
+		serverHelloMessageHook        func(handshake.MessageServerHello) handshake.Message
+		certificateRequestMessageHook func(handshake.MessageCertificateRequest) handshake.Message
+		supportedProtocols            []string
+	}
+	sctp struct {
+		maxReceiveBufferSize uint32
+		enableZeroChecksum   bool
+		rtoMax               time.Duration
+		maxMessageSize       uint32
+		minCwnd              uint32
+		fastRtxWnd           uint32
+		cwndCAStep           uint32
+		enableSnap           bool
+	}
 	sdpMediaLevelFingerprints                 bool
-	sdpExtensions                             map[SDPSectionType][]sdp.ExtMap
 	answeringDTLSRole                         DTLSRole
 	disableCertificateFingerprintVerification bool
 	disableSRTPReplayProtection               bool
 	disableSRTCPReplayProtection              bool
-	vnet                                      *vnet.Net
+	net                                       transport.Net
+	BufferFactory                             func(packetType packetio.BufferPacketType, ssrc uint32) io.ReadWriteCloser
 	LoggerFactory                             logging.LoggerFactory
 	iceTCPMux                                 ice.TCPMux
+	iceUDPMux                                 ice.UDPMux
+	iceProxyDialer                            proxy.Dialer
+	iceDisableActiveTCP                       bool
+	iceBindingRequestHandler                  func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool //nolint:lll
+	disableMediaEngineCopy                    bool
+	disableMediaEngineMultipleCodecs          bool
+	srtpProtectionProfiles                    []dtls.SRTPProtectionProfile
+	receiveMTU                                uint
+	iceMaxBindingRequests                     *uint16
+	fireOnTrackBeforeFirstRTP                 bool
+	disableCloseByDTLS                        bool
+	dataChannelBlockWrite                     bool
+	handleUndeclaredSSRCWithoutAnswer         bool
+	ignoreRidPauseForRecv                     bool
+}
+
+type renominationSettings struct {
+	enabled           bool
+	generator         ice.NominationValueGenerator
+	automatic         bool
+	automaticInterval *time.Duration
+	attributeType     *uint16
+}
+
+// NominationValueGenerator generates nomination values for ICE renomination.
+type NominationValueGenerator func() uint32
+
+func (f NominationValueGenerator) toIce() ice.NominationValueGenerator {
+	return ice.NominationValueGenerator(f)
+}
+
+// RenominationOption allows configuring ICE renomination behavior.
+type RenominationOption func(*renominationSettings)
+
+// WithRenominationGenerator overrides the default nomination value generator.
+func WithRenominationGenerator(generator NominationValueGenerator) RenominationOption {
+	return func(cfg *renominationSettings) {
+		cfg.generator = generator.toIce()
+	}
+}
+
+// WithRenominationInterval sets the interval for automatic renomination checks.
+// Passing zero or a negative duration returns an error from SetICERenomination.
+func WithRenominationInterval(interval time.Duration) RenominationOption {
+	return func(cfg *renominationSettings) {
+		i := interval
+		cfg.automaticInterval = &i
+	}
+}
+
+// WithRenominationNominationAttribute overrides the STUN attribute type used for ICE renomination.
+// If unset, the underlying ICE agent default is used.
+func WithRenominationNominationAttribute(attrType uint16) RenominationOption {
+	return func(cfg *renominationSettings) {
+		a := attrType
+		cfg.attributeType = &a
+	}
+}
+
+var errInvalidRenominationInterval = errors.New("renomination interval must be greater than zero")
+
+// SetICERenomination configures ICE renomination using options for generator, scheduling, and attribute type.
+// Manual control is not exposed yet. This always enables automatic renomination with the default
+// generator unless a custom one is provided.
+func (e *SettingEngine) SetICERenomination(options ...RenominationOption) error {
+	cfg := e.renomination
+	for _, opt := range options {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
+	if cfg.automaticInterval != nil && *cfg.automaticInterval <= 0 {
+		return errInvalidRenominationInterval
+	}
+
+	if cfg.generator == nil {
+		cfg.generator = ice.DefaultNominationValueGenerator()
+	}
+
+	e.renomination.enabled = true
+	e.renomination.generator = cfg.generator
+	e.renomination.automatic = true
+	e.renomination.automaticInterval = cfg.automaticInterval
+	e.renomination.attributeType = cfg.attributeType
+
+	return nil
+}
+
+func (e *SettingEngine) getSCTPMaxMessageSize() uint32 {
+	if e.sctp.maxMessageSize != 0 {
+		return e.sctp.maxMessageSize
+	}
+
+	return defaultMaxSCTPMessageSize
+}
+
+// getReceiveMTU returns the configured MTU. If SettingEngine's MTU is configured to 0 it returns the default.
+func (e *SettingEngine) getReceiveMTU() uint {
+	if e.receiveMTU != 0 {
+		return e.receiveMTU
+	}
+
+	return receiveMTU
 }
 
 // DetachDataChannels enables detaching data channels. When enabled
@@ -66,39 +216,70 @@ func (e *SettingEngine) DetachDataChannels() {
 	e.detach.DataChannels = true
 }
 
+// EnableDataChannelBlockWrite allows data channels to block on write,
+// it only works if DetachDataChannels is enabled.
+func (e *SettingEngine) EnableDataChannelBlockWrite(nonblockWrite bool) {
+	e.dataChannelBlockWrite = nonblockWrite
+}
+
+// SetSRTPProtectionProfiles allows the user to override the default SRTP Protection Profiles
+// The default srtp protection profiles are provided by the function `defaultSrtpProtectionProfiles`.
+func (e *SettingEngine) SetSRTPProtectionProfiles(profiles ...dtls.SRTPProtectionProfile) {
+	e.srtpProtectionProfiles = profiles
+}
+
 // SetICETimeouts sets the behavior around ICE Timeouts
-// * disconnectedTimeout is the duration without network activity before a Agent is considered disconnected. Default is 5 Seconds
-// * failedTimeout is the duration without network activity before a Agent is considered failed after disconnected. Default is 25 Seconds
-// * keepAliveInterval is how often the ICE Agent sends extra traffic if there is no activity, if media is flowing no traffic will be sent. Default is 2 seconds
+//
+// disconnectedTimeout:
+//
+//	Duration without network activity before an Agent is considered disconnected. Default is 5 Seconds
+//
+// failedTimeout:
+//
+//	Duration without network activity before an Agent is considered failed after disconnected. Default is 25 Seconds
+//
+// keepAliveInterval:
+//
+//	How often the ICE Agent sends extra traffic if there is no activity, if media is flowing no traffic will be sent.
+//
+// Default is 2 seconds.
 func (e *SettingEngine) SetICETimeouts(disconnectedTimeout, failedTimeout, keepAliveInterval time.Duration) {
 	e.timeout.ICEDisconnectedTimeout = &disconnectedTimeout
 	e.timeout.ICEFailedTimeout = &failedTimeout
 	e.timeout.ICEKeepaliveInterval = &keepAliveInterval
 }
 
-// SetHostAcceptanceMinWait sets the ICEHostAcceptanceMinWait
+// SetHostAcceptanceMinWait sets the ICEHostAcceptanceMinWait.
 func (e *SettingEngine) SetHostAcceptanceMinWait(t time.Duration) {
 	e.timeout.ICEHostAcceptanceMinWait = &t
 }
 
-// SetSrflxAcceptanceMinWait sets the ICESrflxAcceptanceMinWait
+// SetSrflxAcceptanceMinWait sets the ICESrflxAcceptanceMinWait.
 func (e *SettingEngine) SetSrflxAcceptanceMinWait(t time.Duration) {
 	e.timeout.ICESrflxAcceptanceMinWait = &t
 }
 
-// SetPrflxAcceptanceMinWait sets the ICEPrflxAcceptanceMinWait
+// SetPrflxAcceptanceMinWait sets the ICEPrflxAcceptanceMinWait.
 func (e *SettingEngine) SetPrflxAcceptanceMinWait(t time.Duration) {
 	e.timeout.ICEPrflxAcceptanceMinWait = &t
 }
 
-// SetRelayAcceptanceMinWait sets the ICERelayAcceptanceMinWait
+// SetRelayAcceptanceMinWait sets the ICERelayAcceptanceMinWait.
 func (e *SettingEngine) SetRelayAcceptanceMinWait(t time.Duration) {
 	e.timeout.ICERelayAcceptanceMinWait = &t
+}
+
+// SetSTUNGatherTimeout sets the ICESTUNGatherTimeout.
+func (e *SettingEngine) SetSTUNGatherTimeout(t time.Duration) {
+	e.timeout.ICESTUNGatherTimeout = &t
 }
 
 // SetEphemeralUDPPortRange limits the pool of ephemeral ports that
 // ICE UDP connections can allocate from. This affects both host candidates,
 // and the local address of server reflexive candidates.
+//
+// When portMin and portMax are left to the 0 default value, pion/ice candidate
+// gatherer replaces them and uses 1 for portMin and 65535 for portMax.
 func (e *SettingEngine) SetEphemeralUDPPortRange(portMin, portMax uint16) error {
 	if portMax < portMin {
 		return ice.ErrPort
@@ -106,10 +287,11 @@ func (e *SettingEngine) SetEphemeralUDPPortRange(portMin, portMax uint16) error 
 
 	e.ephemeralUDP.PortMin = portMin
 	e.ephemeralUDP.PortMax = portMax
+
 	return nil
 }
 
-// SetLite configures whether or not the ice agent should be a lite agent
+// SetLite configures whether or not the ice agent should be a lite agent.
 func (e *SettingEngine) SetLite(lite bool) {
 	e.candidates.ICELite = lite
 }
@@ -123,14 +305,29 @@ func (e *SettingEngine) SetNetworkTypes(candidateTypes []NetworkType) {
 // SetInterfaceFilter sets the filtering functions when gathering ICE candidates
 // This can be used to exclude certain network interfaces from ICE. Which may be
 // useful if you know a certain interface will never succeed, or if you wish to reduce
-// the amount of information you wish to expose to the remote peer
-func (e *SettingEngine) SetInterfaceFilter(filter func(string) bool) {
+// the amount of information you wish to expose to the remote peer.
+func (e *SettingEngine) SetInterfaceFilter(filter func(string) (keep bool)) {
 	e.candidates.InterfaceFilter = filter
+}
+
+// SetIPFilter sets the filtering functions when gathering ICE candidates
+// This can be used to exclude certain ip from ICE. Which may be
+// useful if you know a certain ip will never succeed, or if you wish to reduce
+// the amount of information you wish to expose to the remote peer.
+func (e *SettingEngine) SetIPFilter(filter func(net.IP) (keep bool)) {
+	e.candidates.IPFilter = filter
+}
+
+// SetRemoteIPFilter sets the filtering function for remote candidate IP addresses.
+// This can be used to whitelist or blacklist remote candidate IPs before they are
+// added to the ICE agent.
+func (e *SettingEngine) SetRemoteIPFilter(filter func(net.IP) (keep bool)) {
+	e.candidates.RemoteIPFilter = filter
 }
 
 // SetNAT1To1IPs sets a list of external IP addresses of 1:1 (D)NAT
 // and a candidate type for which the external IP address is used.
-// This is useful when you are host a server using Pion on an AWS EC2 instance
+// This is useful when you host a server using Pion on an AWS EC2 instance
 // which has a private address, behind a 1:1 DNAT with a public IP (e.g.
 // Elastic IP). In this case, you can give the public IP address so that
 // Pion will use the public IP address in its candidate instead of the private
@@ -139,10 +336,12 @@ func (e *SettingEngine) SetInterfaceFilter(filter func(string) bool) {
 // Two types of candidates are supported:
 //
 // ICECandidateTypeHost:
-//		The public IP address will be used for the host candidate in the SDP.
+//
+//	The public IP address will be used for the host candidate in the SDP.
+//
 // ICECandidateTypeSrflx:
-//		A server reflexive candidate with the given public IP address will be added
-// to the SDP.
+//
+//	A server reflexive candidate with the given public IP address will be added to the SDP.
 //
 // Please note that if you choose ICECandidateTypeHost, then the private IP address
 // won't be advertised with the peer. Also, this option cannot be used along with mDNS.
@@ -151,9 +350,47 @@ func (e *SettingEngine) SetInterfaceFilter(filter func(string) bool) {
 // with the public IP. The host candidate is still available along with mDNS
 // capabilities unaffected. Also, you cannot give STUN server URL at the same time.
 // It will result in an error otherwise.
+//
+// Deprecated: Use SetICEAddressRewriteRules instead. To mirror the legacy
+// behavior, supply ICEAddressRewriteRule with External set to ips, AsCandidateType
+// set to candidateType, and Mode set to ICEAddressRewriteReplace for host
+// candidates or ICEAddressRewriteAppend for server reflexive candidates.
+// Or leave Mode unspecified to use the default behavior;
+// replace for host candidates and append for server reflexive candidates.
 func (e *SettingEngine) SetNAT1To1IPs(ips []string, candidateType ICECandidateType) {
 	e.candidates.NAT1To1IPs = ips
 	e.candidates.NAT1To1IPCandidateType = candidateType
+}
+
+// SetICEAddressRewriteRules configures address rewrite rules for candidate publication.
+// These rules provide fine-grained control over which local addresses are replaced or
+// supplemented with external IPs.
+// This replaces the legacy NAT1To1 settings, which will be deprecated in the future.
+func (e *SettingEngine) SetICEAddressRewriteRules(rules ...ICEAddressRewriteRule) error {
+	if len(rules) == 0 {
+		e.candidates.addressRewriteRules = nil
+
+		return nil
+	}
+
+	if len(e.candidates.NAT1To1IPs) > 0 {
+		return errAddressRewriteWithNAT1To1
+	}
+
+	converted := make([]ice.AddressRewriteRule, 0, len(rules))
+	for _, rule := range rules {
+		converted = append(converted, rule.toICE())
+	}
+
+	e.candidates.addressRewriteRules = converted
+
+	return nil
+}
+
+// SetIncludeLoopbackCandidate enable pion to gather loopback candidates, it is useful
+// for some VM have public IP mapped to loopback interface.
+func (e *SettingEngine) SetIncludeLoopbackCandidate(include bool) {
+	e.candidates.IncludeLoopbackCandidate = include
 }
 
 // SetAnsweringDTLSRole sets the DTLS role that is selected when offering
@@ -161,49 +398,53 @@ func (e *SettingEngine) SetNAT1To1IPs(ips []string, candidateType ICECandidateTy
 // may be useful when interacting with non-compliant clients or debugging issues.
 //
 // DTLSRoleActive:
-// 		Act as DTLS Client, send the ClientHello and starts the handshake
+//
+//	Act as DTLS Client, send the ClientHello and starts the handshake
+//
 // DTLSRolePassive:
-// 		Act as DTLS Server, wait for ClientHello
+//
+//	Act as DTLS Server, wait for ClientHello
 func (e *SettingEngine) SetAnsweringDTLSRole(role DTLSRole) error {
 	if role != DTLSRoleClient && role != DTLSRoleServer {
-		return errors.New("SetAnsweringDTLSRole must DTLSRoleClient or DTLSRoleServer")
+		return errSettingEngineSetAnsweringDTLSRole
 	}
 
 	e.answeringDTLSRole = role
+
 	return nil
 }
 
-// SetVNet sets the VNet instance that is passed to pion/ice
+// SetNet sets the Net instance that is passed to pion/ice
 //
-// VNet is a virtual network layer for Pion, allowing users to simulate
-// different topologies, latency, loss and jitter. This can be useful for
-// learning WebRTC concepts or testing your application in a lab environment
-func (e *SettingEngine) SetVNet(vnet *vnet.Net) {
-	e.vnet = vnet
+// Net is an network interface layer for Pion, allowing users to replace
+// Pions network stack with a custom implementation.
+func (e *SettingEngine) SetNet(net transport.Net) {
+	e.net = net
 }
 
-// GenerateMulticastDNSCandidates instructs pion/ice to generate host candidates with mDNS hostnames instead of IP Addresses
-func (e *SettingEngine) GenerateMulticastDNSCandidates(generateMulticastDNSCandidates bool) {
-	e.candidates.GenerateMulticastDNSCandidates = generateMulticastDNSCandidates
+// SetICEMulticastDNSMode controls if pion/ice queries and generates mDNS ICE Candidates.
+func (e *SettingEngine) SetICEMulticastDNSMode(multicastDNSMode ice.MulticastDNSMode) {
+	e.candidates.MulticastDNSMode = multicastDNSMode
 }
 
 // SetMulticastDNSHostName sets a static HostName to be used by pion/ice instead of generating one on startup
 //
-// This should only be used for a single PeerConnection. Having multiple PeerConnections with the same HostName will cause
-// undefined behavior
+// This should only be used for a single PeerConnection.
+// Having multiple PeerConnections with the same HostName will cause undefined behavior.
 func (e *SettingEngine) SetMulticastDNSHostName(hostName string) {
 	e.candidates.MulticastDNSHostName = hostName
 }
 
 // SetICECredentials sets a staic uFrag/uPwd to be used by pion/ice
 //
-// This is useful if you want to do signalless WebRTC session, or having a reproducible environment with static credentials
+// This is useful if you want to do signalless WebRTC session,
+// or having a reproducible environment with static credentials.
 func (e *SettingEngine) SetICECredentials(usernameFragment, password string) {
 	e.candidates.UsernameFragment = usernameFragment
 	e.candidates.Password = password
 }
 
-// DisableCertificateFingerprintVerification disables fingerprint verification after DTLS Handshake has finished
+// DisableCertificateFingerprintVerification disables fingerprint verification after DTLS Handshake has finished.
 func (e *SettingEngine) DisableCertificateFingerprintVerification(isDisabled bool) {
 	e.disableCertificateFingerprintVerification = isDisabled
 }
@@ -249,64 +490,235 @@ func (e *SettingEngine) SetICETCPMux(tcpMux ice.TCPMux) {
 	e.iceTCPMux = tcpMux
 }
 
-// AddSDPExtensions adds available and offered extensions for media type.
-//
-// Ext IDs are optional and generated if you do not provide them
-// SDP answers will only include extensions supported by both sides
-func (e *SettingEngine) AddSDPExtensions(mediaType SDPSectionType, exts []sdp.ExtMap) {
-	if e.sdpExtensions == nil {
-		e.sdpExtensions = make(map[SDPSectionType][]sdp.ExtMap)
-	}
-	if _, ok := e.sdpExtensions[mediaType]; !ok {
-		e.sdpExtensions[mediaType] = []sdp.ExtMap{}
-	}
-	e.sdpExtensions[mediaType] = append(e.sdpExtensions[mediaType], exts...)
+// SetICEUDPMux allows ICE traffic to come through a single UDP port, drastically
+// simplifying deployments where ports will need to be opened/forwarded.
+// UDPMux should be started prior to creating PeerConnections.
+func (e *SettingEngine) SetICEUDPMux(udpMux ice.UDPMux) {
+	e.iceUDPMux = udpMux
 }
 
-func (e *SettingEngine) getSDPExtensions() map[SDPSectionType][]sdp.ExtMap {
-	var lastID int
-	idMap := map[string]int{}
+// SetICEProxyDialer sets the proxy dialer interface based on golang.org/x/net/proxy.
+func (e *SettingEngine) SetICEProxyDialer(d proxy.Dialer) {
+	e.iceProxyDialer = d
+}
 
-	// Build provided ext id map
-	for _, extList := range e.sdpExtensions {
-		for _, ext := range extList {
-			if ext.Value != 0 {
-				idMap[ext.URI.String()] = ext.Value
-			}
-		}
-	}
+// SetICEMaxBindingRequests sets the maximum amount of binding requests
+// that can be sent on a candidate before it is considered invalid.
+func (e *SettingEngine) SetICEMaxBindingRequests(d uint16) {
+	e.iceMaxBindingRequests = &d
+}
 
-	// Find next available ID
-	nextID := func() {
-		var done bool
-		for !done {
-			lastID++
-			var found bool
-			for _, v := range idMap {
-				if lastID == v {
-					found = true
-					break
-				}
-			}
-			if !found {
-				done = true
-			}
-		}
-	}
+// DisableActiveTCP disables using active TCP for ICE. Active TCP is enabled by default.
+func (e *SettingEngine) DisableActiveTCP(isDisabled bool) {
+	e.iceDisableActiveTCP = isDisabled
+}
 
-	// Assign missing IDs across all media types based on URI
-	for mType, extList := range e.sdpExtensions {
-		for i, ext := range extList {
-			if ext.Value == 0 {
-				if id, ok := idMap[ext.URI.String()]; ok {
-					e.sdpExtensions[mType][i].Value = id
-				} else {
-					nextID()
-					e.sdpExtensions[mType][i].Value = lastID
-					idMap[ext.URI.String()] = lastID
-				}
-			}
-		}
-	}
-	return e.sdpExtensions
+// DisableMediaEngineCopy stops the MediaEngine from being copied. This allows a user to modify
+// the MediaEngine after the PeerConnection has been constructed. This is useful if you wish to
+// modify codecs after signaling. Make sure not to share MediaEngines between PeerConnections.
+func (e *SettingEngine) DisableMediaEngineCopy(isDisabled bool) {
+	e.disableMediaEngineCopy = isDisabled
+}
+
+// DisableMediaEngineMultipleCodecs disables the MediaEngine negotiating different codecs.
+// With the default value multiple media sections in the SDP can each negotiate different
+// codecs. This is the new default behvior, because it makes Pion more spec compliant.
+// The value of this setting will get copied to every copy of the MediaEngine generated
+// for new PeerConnections (assuming DisableMediaEngineCopy is set to false).
+// Note: this setting is targeted to be removed in release 4.2.0 (or later).
+func (e *SettingEngine) DisableMediaEngineMultipleCodecs(isDisabled bool) {
+	e.disableMediaEngineMultipleCodecs = isDisabled
+}
+
+// SetReceiveMTU sets the size of read buffer that copies incoming packets. This is optional.
+// Leave this 0 for the default receiveMTU.
+func (e *SettingEngine) SetReceiveMTU(receiveMTU uint) {
+	e.receiveMTU = receiveMTU
+}
+
+// SetDTLSRetransmissionInterval sets the retranmission interval for DTLS.
+func (e *SettingEngine) SetDTLSRetransmissionInterval(interval time.Duration) {
+	e.dtls.retransmissionInterval = interval
+}
+
+// SetDTLSInsecureSkipHelloVerify sets the skip HelloVerify flag for DTLS.
+// If true and when acting as DTLS server, will allow client to skip hello verify phase and
+// receive ServerHello after initial ClientHello. This will mean faster connect times,
+// but will have lower DoS attack resistance.
+func (e *SettingEngine) SetDTLSInsecureSkipHelloVerify(skip bool) {
+	e.dtls.insecureSkipHelloVerify = skip
+}
+
+// SetDTLSDisableInsecureSkipVerify sets the disable skip insecure verify flag for DTLS.
+// This controls whether a client verifies the server's certificate chain and host name.
+func (e *SettingEngine) SetDTLSDisableInsecureSkipVerify(disable bool) {
+	e.dtls.disableInsecureSkipVerify = disable
+}
+
+// SetDTLSEllipticCurves sets the elliptic curves for DTLS.
+func (e *SettingEngine) SetDTLSEllipticCurves(ellipticCurves ...dtlsElliptic.Curve) {
+	e.dtls.ellipticCurves = ellipticCurves
+}
+
+// SetDTLSConnectContextMaker sets the context used during the DTLS Handshake.
+// It can be used to extend or reduce the timeout on the DTLS Handshake.
+// If nil, the default dtls.ConnectContextMaker is used. It can be implemented as following.
+//
+//	func ConnectContextMaker() (context.Context, func()) {
+//		return context.WithTimeout(context.Background(), 30*time.Second)
+//	}
+func (e *SettingEngine) SetDTLSConnectContextMaker(connectContextMaker func() (context.Context, func())) {
+	e.dtls.connectContextMaker = connectContextMaker
+}
+
+// SetDTLSExtendedMasterSecret sets the extended master secret type for DTLS.
+func (e *SettingEngine) SetDTLSExtendedMasterSecret(extendedMasterSecret dtls.ExtendedMasterSecretType) {
+	e.dtls.extendedMasterSecret = extendedMasterSecret
+}
+
+// SetDTLSClientAuth sets the client auth type for DTLS.
+func (e *SettingEngine) SetDTLSClientAuth(clientAuth dtls.ClientAuthType) {
+	e.dtls.clientAuth = &clientAuth
+}
+
+// SetDTLSClientCAs sets the client CA certificate pool for DTLS certificate verification.
+func (e *SettingEngine) SetDTLSClientCAs(clientCAs *x509.CertPool) {
+	e.dtls.clientCAs = clientCAs
+}
+
+// SetDTLSRootCAs sets the root CA certificate pool for DTLS certificate verification.
+func (e *SettingEngine) SetDTLSRootCAs(rootCAs *x509.CertPool) {
+	e.dtls.rootCAs = rootCAs
+}
+
+// SetDTLSKeyLogWriter sets the destination of the TLS key material for debugging.
+// Logging key material compromises security and should only be use for debugging.
+func (e *SettingEngine) SetDTLSKeyLogWriter(writer io.Writer) {
+	e.dtls.keyLogWriter = writer
+}
+
+// SetSCTPMaxReceiveBufferSize sets the maximum receive buffer size.
+// Leave this 0 for the default maxReceiveBufferSize.
+func (e *SettingEngine) SetSCTPMaxReceiveBufferSize(maxReceiveBufferSize uint32) {
+	e.sctp.maxReceiveBufferSize = maxReceiveBufferSize
+}
+
+// EnableSCTPZeroChecksum controls the zero checksum feature in SCTP.
+// This removes the need to checksum every incoming/outgoing packet and will reduce
+// latency and CPU usage. This feature is not backwards compatible so is disabled by default.
+func (e *SettingEngine) EnableSCTPZeroChecksum(isEnabled bool) {
+	e.sctp.enableZeroChecksum = isEnabled
+}
+
+// EnableSctpSnap enables the use of the SCTP SNAP connect optimization.
+func (e *SettingEngine) EnableSctpSnap(isEnabled bool) {
+	e.sctp.enableSnap = isEnabled
+}
+
+// SetSCTPMaxMessageSize sets the largest message we are willing to accept.
+// Leave this 0 for the default max message size.
+func (e *SettingEngine) SetSCTPMaxMessageSize(maxMessageSize uint32) {
+	e.sctp.maxMessageSize = maxMessageSize
+}
+
+// SetDTLSCipherSuites allows the user to specify a list of DTLS CipherSuites.
+// This allow to control which ciphers implemented by pion/dtls are used during the DTLS handshake.
+// It can be used for DTLS connection hardening.
+func (e *SettingEngine) SetDTLSCipherSuites(cipherSuites ...dtls.CipherSuiteID) {
+	e.dtls.cipherSuites = cipherSuites
+}
+
+// SetDTLSCustomerCipherSuites allows the user to specify a list of custom DTLS CipherSuites.
+// It allows to use custom/private DTLS CipherSuites in addition to the ones implemented by pion/dtls.
+func (e *SettingEngine) SetDTLSCustomerCipherSuites(customCipherSuites func() []dtls.CipherSuite) {
+	e.dtls.customCipherSuites = customCipherSuites
+}
+
+// SetDTLSClientHelloMessageHook if not nil, is called when a DTLS Client Hello message is sent
+// from a client. The returned handshake message replaces the original message.
+func (e *SettingEngine) SetDTLSClientHelloMessageHook(hook func(handshake.MessageClientHello) handshake.Message) {
+	e.dtls.clientHelloMessageHook = hook
+}
+
+// SetDTLSServerHelloMessageHook if not nil, is called when a DTLS Server Hello message is sent
+// from a client. The returned handshake message replaces the original message.
+func (e *SettingEngine) SetDTLSServerHelloMessageHook(hook func(handshake.MessageServerHello) handshake.Message) {
+	e.dtls.serverHelloMessageHook = hook
+}
+
+// SetDTLSCertificateRequestMessageHook if not nil, is called when a DTLS Certificate Request message is sent
+// from a client. The returned handshake message replaces the original message.
+func (e *SettingEngine) SetDTLSCertificateRequestMessageHook(
+	hook func(handshake.MessageCertificateRequest) handshake.Message,
+) {
+	e.dtls.certificateRequestMessageHook = hook
+}
+
+// SetDTLSSupportedProtocols sets the supported application protocols (ALPN) for the DTLS handshake.
+// Note: RFC 8833 defines two application protocols for WebRTC:
+//   - `webrtc` - mixed media and data communications using SRTP and data channels.
+//   - `c-webrtc` - WebRTC with a promise to protect media confidentiality.
+func (e *SettingEngine) SetDTLSSupportedProtocols(protocols ...string) {
+	e.dtls.supportedProtocols = protocols
+}
+
+// SetSCTPRTOMax sets the maximum retransmission timeout.
+// Leave this 0 for the default timeout.
+func (e *SettingEngine) SetSCTPRTOMax(rtoMax time.Duration) {
+	e.sctp.rtoMax = rtoMax
+}
+
+// SetSCTPMinCwnd sets the minimum congestion window size. The congestion window
+// will not be smaller than this value during congestion control.
+func (e *SettingEngine) SetSCTPMinCwnd(minCwnd uint32) {
+	e.sctp.minCwnd = minCwnd
+}
+
+// SetSCTPFastRtxWnd sets the fast retransmission window size.
+func (e *SettingEngine) SetSCTPFastRtxWnd(fastRtxWnd uint32) {
+	e.sctp.fastRtxWnd = fastRtxWnd
+}
+
+// SetSCTPCwndCAStep sets congestion window adjustment step size during congestion avoidance.
+func (e *SettingEngine) SetSCTPCwndCAStep(cwndCAStep uint32) {
+	e.sctp.cwndCAStep = cwndCAStep
+}
+
+// SetICEBindingRequestHandler sets a callback that is fired on a STUN BindingRequest
+// This allows users to do things like
+// - Log incoming Binding Requests for debugging
+// - Implement draft-thatcher-ice-renomination
+// - Implement custom CandidatePair switching logic.
+func (e *SettingEngine) SetICEBindingRequestHandler(
+	bindingRequestHandler func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool,
+) {
+	e.iceBindingRequestHandler = bindingRequestHandler
+}
+
+// SetFireOnTrackBeforeFirstRTP sets if firing the OnTrack event should happen
+// before any RTP packets are received. Setting this to true will
+// have the Track's Codec and PayloadTypes be initially set to their
+// zero values in the OnTrack handler.
+// Note: This does not yet affect simulcast tracks.
+func (e *SettingEngine) SetFireOnTrackBeforeFirstRTP(fireOnTrackBeforeFirstRTP bool) {
+	e.fireOnTrackBeforeFirstRTP = fireOnTrackBeforeFirstRTP
+}
+
+// DisableCloseByDTLS sets if the connection should be closed when dtls transport is closed.
+// Setting this to true will keep the connection open when dtls transport is closed
+// and relies on the ice failed state to detect the connection is interrupted.
+func (e *SettingEngine) DisableCloseByDTLS(isEnabled bool) {
+	e.disableCloseByDTLS = isEnabled
+}
+
+// SetHandleUndeclaredSSRCWithoutAnswer controls if an SDP answer is required for
+// processing early media of non-simulcast tracks.
+func (e *SettingEngine) SetHandleUndeclaredSSRCWithoutAnswer(handleUndeclaredSSRCWithoutAnswer bool) {
+	e.handleUndeclaredSSRCWithoutAnswer = handleUndeclaredSSRCWithoutAnswer
+}
+
+// SetIgnoreRidPauseForRecv controls if SDP `a=simulcast:recv` will include the paused attribute of a RID
+// (simulcast layer).
+func (e *SettingEngine) SetIgnoreRidPauseForRecv(ignoreRidPauseForRecv bool) {
+	e.ignoreRidPauseForRecv = ignoreRidPauseForRecv
 }

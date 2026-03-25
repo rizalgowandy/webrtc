@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 import (
@@ -12,7 +15,7 @@ func TestNewICEProtocol(t *testing.T) {
 		shouldFail    bool
 		expectedProto ICEProtocol
 	}{
-		{unknownStr, true, ICEProtocol(Unknown)},
+		{ErrUnknownType.Error(), true, ICEProtocolUnknown},
 		{"udp", false, ICEProtocolUDP},
 		{"tcp", false, ICEProtocolTCP},
 		{"UDP", false, ICEProtocolUDP},
@@ -21,8 +24,10 @@ func TestNewICEProtocol(t *testing.T) {
 
 	for i, testCase := range testCases {
 		actual, err := NewICEProtocol(testCase.protoString)
-		if (err != nil) != testCase.shouldFail {
-			t.Error(err)
+		if testCase.shouldFail {
+			assert.Error(t, err, "testCase: %d %v", i, testCase)
+		} else {
+			assert.NoError(t, err, "testCase: %d %v", i, testCase)
 		}
 		assert.Equal(t,
 			testCase.expectedProto,
@@ -37,7 +42,7 @@ func TestICEProtocol_String(t *testing.T) {
 		proto          ICEProtocol
 		expectedString string
 	}{
-		{ICEProtocol(Unknown), unknownStr},
+		{ICEProtocolUnknown, ErrUnknownType.Error()},
 		{ICEProtocolUDP, "udp"},
 		{ICEProtocolTCP, "tcp"},
 	}

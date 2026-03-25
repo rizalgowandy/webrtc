@@ -1,43 +1,28 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+//go:build !js
+
+// rtp-to-webrtc demonstrates how to consume a RTP stream video UDP, and then send to a WebRTC client.
 package main
 
 import (
+	"bufio"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"strings"
 
-	"github.com/pion/rtp"
-	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/examples/internal/signal"
+	"github.com/pion/webrtc/v4"
 )
 
+// nolint:cyclop
 func main() {
-	// Wait for the offer to be pasted
-	offer := webrtc.SessionDescription{}
-	signal.Decode(signal.MustReadStdin(), &offer)
-
-	// We make our own mediaEngine so we can place the sender's codecs in it.  This because we must use the
-	// dynamic media type from the sender in our answer. This is not required if we are the offerer
-	mediaEngine := webrtc.MediaEngine{}
-	err := mediaEngine.PopulateFromSDP(offer)
-	if err != nil {
-		panic(err)
-	}
-
-	// Search for VP8 Payload type. If the offer doesn't support VP8 exit since
-	// since they won't be able to decode anything we send them
-	var payloadType uint8
-	for _, videoCodec := range mediaEngine.GetCodecsByKind(webrtc.RTPCodecTypeVideo) {
-		if videoCodec.Name == "VP8" {
-			payloadType = videoCodec.PayloadType
-			break
-		}
-	}
-	if payloadType == 0 {
-		panic("Remote peer does not support VP8")
-	}
-
-	// Create a new RTCPeerConnection
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
-	peerConnection, err := api.NewPeerConnection(webrtc.Configuration{
+	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{
 				URLs: []string{"stun:stun.l.google.com:19302"},
@@ -53,41 +38,60 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	// Increase the UDP receive buffer size
+	// Default UDP buffer sizes vary on different operating systems
+	bufferSize := 300000 // 300KB
+	err = listener.SetReadBuffer(bufferSize)
+	if err != nil {
+		panic(err)
+	}
+
 	defer func() {
 		if err = listener.Close(); err != nil {
 			panic(err)
 		}
 	}()
 
-	fmt.Println("Waiting for RTP Packets, please run GStreamer or ffmpeg now")
-
-	// Listen for a single RTP Packet, we need this to determine the SSRC
-	inboundRTPPacket := make([]byte, 4096) // UDP MTU
-	n, _, err := listener.ReadFromUDP(inboundRTPPacket)
+	// Create a video track
+	videoTrack, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion",
+	)
+	if err != nil {
+		panic(err)
+	}
+	rtpSender, err := peerConnection.AddTrack(videoTrack)
 	if err != nil {
 		panic(err)
 	}
 
-	// Unmarshal the incoming packet
-	packet := &rtp.Packet{}
-	if err = packet.Unmarshal(inboundRTPPacket[:n]); err != nil {
-		panic(err)
-	}
-
-	// Create a video track, using the same SSRC as the incoming RTP Packet
-	videoTrack, err := peerConnection.NewTrack(payloadType, packet.SSRC, "video", "pion")
-	if err != nil {
-		panic(err)
-	}
-	if _, err = peerConnection.AddTrack(videoTrack); err != nil {
-		panic(err)
-	}
+	// Read incoming RTCP packets
+	// Before these packets are returned they are processed by interceptors. For things
+	// like NACK this needs to be called.
+	go func() {
+		rtcpBuf := make([]byte, 1500)
+		for {
+			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+				return
+			}
+		}
+	}()
 
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		fmt.Printf("Connection State has changed %s \n", connectionState.String())
+
+		if connectionState == webrtc.ICEConnectionStateFailed {
+			if closeErr := peerConnection.Close(); closeErr != nil {
+				panic(closeErr)
+			}
+		}
 	})
+
+	// Wait for the offer to be pasted
+	offer := webrtc.SessionDescription{}
+	decode(readUntilNewline(), &offer)
 
 	// Set the remote SessionDescription
 	if err = peerConnection.SetRemoteDescription(offer); err != nil {
@@ -114,24 +118,66 @@ func main() {
 	<-gatherComplete
 
 	// Output the answer in base64 so we can paste it in browser
-	fmt.Println(signal.Encode(*peerConnection.LocalDescription()))
+	fmt.Println(encode(peerConnection.LocalDescription()))
 
 	// Read RTP packets forever and send them to the WebRTC Client
+	inboundRTPPacket := make([]byte, 1600) // UDP MTU
 	for {
 		n, _, err := listener.ReadFrom(inboundRTPPacket)
 		if err != nil {
-			fmt.Printf("error during read: %s", err)
+			panic(fmt.Sprintf("error during read: %s", err))
+		}
+
+		if _, err = videoTrack.Write(inboundRTPPacket[:n]); err != nil {
+			if errors.Is(err, io.ErrClosedPipe) {
+				// The peerConnection has been closed.
+				return
+			}
+
+			panic(err)
+		}
+	}
+}
+
+// Read from stdin until we get a newline.
+func readUntilNewline() (in string) {
+	var err error
+
+	r := bufio.NewReader(os.Stdin)
+	for {
+		in, err = r.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
 			panic(err)
 		}
 
-		packet := &rtp.Packet{}
-		if err := packet.Unmarshal(inboundRTPPacket[:n]); err != nil {
-			panic(err)
+		if in = strings.TrimSpace(in); len(in) > 0 {
+			break
 		}
-		packet.Header.PayloadType = payloadType
+	}
 
-		if writeErr := videoTrack.WriteRTP(packet); writeErr != nil {
-			panic(writeErr)
-		}
+	fmt.Println("")
+
+	return
+}
+
+// JSON encode + base64 a SessionDescription.
+func encode(obj *webrtc.SessionDescription) string {
+	b, err := json.Marshal(obj)
+	if err != nil {
+		panic(err)
+	}
+
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// Decode a base64 and unmarshal JSON into a SessionDescription.
+func decode(in string, obj *webrtc.SessionDescription) {
+	b, err := base64.StdEncoding.DecodeString(in)
+	if err != nil {
+		panic(err)
+	}
+
+	if err = json.Unmarshal(b, obj); err != nil {
+		panic(err)
 	}
 }

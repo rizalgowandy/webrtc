@@ -1,8 +1,10 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package oggwriter
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"testing"
 
@@ -32,7 +34,6 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 			Extension:        true,
 			ExtensionProfile: 1,
 			Version:          2,
-			PayloadOffset:    20,
 			PayloadType:      111,
 			SequenceNumber:   27023,
 			Timestamp:        3653407706,
@@ -40,7 +41,6 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 			CSRC:             []uint32{},
 		},
 		Payload: rawPkt[20:],
-		Raw:     rawPkt,
 	}
 	assert.NoError(t, validPacket.SetExtension(0, []byte{0xFF, 0xFF, 0xFF, 0xFF}))
 
@@ -54,15 +54,15 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 			message:      "OggWriter shouldn't be able to write something to a closed file",
 			messageClose: "OggWriter should be able to close an already closed file",
 			packet:       validPacket,
-			err:          fmt.Errorf("file not opened"),
+			err:          errFileNotOpened,
 			closeErr:     nil,
 		},
 		{
 			buffer:       &bytes.Buffer{},
-			message:      "OggWriter shouldn't be able to write an empty packet",
+			message:      "OggWriter shouldn't be able to write a nil packet",
 			messageClose: "OggWriter should be able to close the file",
-			packet:       &rtp.Packet{},
-			err:          fmt.Errorf("invalid nil packet"),
+			packet:       nil,
+			err:          errInvalidNilPacket,
 			closeErr:     nil,
 		},
 		{
@@ -78,7 +78,7 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 			message:      "OggWriter shouldn't be able to write something to a closed file",
 			messageClose: "OggWriter should be able to close an already closed file",
 			packet:       nil,
-			err:          fmt.Errorf("file not opened"),
+			err:          errFileNotOpened,
 			closeErr:     nil,
 		},
 	}
@@ -123,4 +123,43 @@ func TestOggWriter_AddPacketAndClose(t *testing.T) {
 			assert.Equal(t.closeErr, res, t.messageClose)
 		}
 	}
+}
+
+func TestOggWriter_EmptyPayload(t *testing.T) {
+	buffer := &bytes.Buffer{}
+
+	writer, err := NewWith(buffer, 48000, 2)
+	assert.NoError(t, err)
+
+	assert.NoError(t, writer.WriteRTP(&rtp.Packet{Payload: []byte{}}))
+}
+
+func TestOggWriter_LargePayload(t *testing.T) {
+	rawPkt := bytes.Repeat([]byte{0x45}, 1000)
+
+	validPacket := &rtp.Packet{
+		Header: rtp.Header{
+			Marker:           true,
+			Extension:        true,
+			ExtensionProfile: 1,
+			Version:          2,
+			PayloadType:      111,
+			SequenceNumber:   27023,
+			Timestamp:        3653407706,
+			SSRC:             476325762,
+			CSRC:             []uint32{},
+		},
+		Payload: rawPkt,
+	}
+	assert.NoError(t, validPacket.SetExtension(0, []byte{0xFF, 0xFF, 0xFF, 0xFF}))
+
+	writer, err := NewWith(&bytes.Buffer{}, 48000, 2)
+	assert.NoError(t, err, "OggWriter should be created")
+	assert.NotNil(t, writer, "Writer shouldn't be nil")
+
+	err = writer.WriteRTP(validPacket)
+	assert.NoError(t, err)
+
+	data := writer.createPage(rawPkt, pageHeaderTypeContinuationOfStream, 0, 1)
+	assert.Equal(t, uint8(4), data[26])
 }

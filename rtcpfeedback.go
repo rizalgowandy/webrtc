@@ -1,19 +1,22 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 const (
-	//TypeRTCPFBTransportCC ..
+	// TypeRTCPFBTransportCC ..
 	TypeRTCPFBTransportCC = "transport-cc"
 
-	//TypeRTCPFBGoogREMB ..
+	// TypeRTCPFBGoogREMB ..
 	TypeRTCPFBGoogREMB = "goog-remb"
 
-	//TypeRTCPFBACK ..
+	// TypeRTCPFBACK ..
 	TypeRTCPFBACK = "ack"
 
-	//TypeRTCPFBCCM ..
+	// TypeRTCPFBCCM ..
 	TypeRTCPFBCCM = "ccm"
 
-	//TypeRTCPFBNACK ..
+	// TypeRTCPFBNACK ..
 	TypeRTCPFBNACK = "nack"
 )
 

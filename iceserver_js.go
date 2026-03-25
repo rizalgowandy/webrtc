@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+//go:build js && wasm
 // +build js,wasm
 
 package webrtc
@@ -5,7 +9,7 @@ package webrtc
 import (
 	"errors"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 )
 
 // ICEServer describes a single STUN and TURN server that can be used by
@@ -13,9 +17,9 @@ import (
 type ICEServer struct {
 	URLs     []string
 	Username string
-	// Note: Credential and CredentialType are not supported.
-	// Credential     interface{}
-	// CredentialType ICECredentialType
+	// Note: TURN is not supported in the WASM bindings yet
+	Credential     any
+	CredentialType ICECredentialType
 }
 
 func (s ICEServer) parseURL(i int) (*ice.URL, error) {
@@ -32,27 +36,6 @@ func (s ICEServer) validate() ([]*ice.URL, error) {
 		}
 
 		if url.Scheme == ice.SchemeTypeTURN || url.Scheme == ice.SchemeTypeTURNS {
-			// // https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.2)
-			// if s.Username == "" || s.Credential == nil {
-			// 	return nil, &rtcerr.InvalidAccessError{Err: ErrNoTurnCredentials}
-			// }
-
-			// switch s.CredentialType {
-			// case ICECredentialTypePassword:
-			// 	// https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.3)
-			// 	if _, ok := s.Credential.(string); !ok {
-			// 		return nil, &rtcerr.InvalidAccessError{Err: ErrTurnCredentials}
-			// 	}
-
-			// case ICECredentialTypeOauth:
-			// 	// https://www.w3.org/TR/webrtc/#set-the-configuration (step #11.3.4)
-			// 	if _, ok := s.Credential.(OAuthCredential); !ok {
-			// 		return nil, &rtcerr.InvalidAccessError{Err: ErrTurnCredentials}
-			// 	}
-
-			// default:
-			// 	return nil, &rtcerr.InvalidAccessError{Err: ErrTurnCredentials}
-			// }
 			return nil, errors.New("TURN is not currently supported in the JavaScript/Wasm bindings")
 		}
 

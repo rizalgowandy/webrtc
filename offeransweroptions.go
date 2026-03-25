@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 // OfferAnswerOptions is a base structure which describes the options that
@@ -6,6 +9,10 @@ type OfferAnswerOptions struct {
 	// VoiceActivityDetection allows the application to provide information
 	// about whether it wishes voice detection feature to be enabled or disabled.
 	VoiceActivityDetection bool
+	// ICETricklingSupported indicates whether the ICE agent should use trickle ICE
+	// If set, the "a=ice-options:trickle" attribute is added to the generated SDP payload.
+	// (See https://datatracker.ietf.org/doc/html/rfc9725#section-4.3.3)
+	ICETricklingSupported bool
 }
 
 // AnswerOptions structure describes the options used to control the answer
@@ -15,7 +22,7 @@ type AnswerOptions struct {
 }
 
 // OfferOptions structure describes the options used to control the offer
-// creation process
+// creation process.
 type OfferOptions struct {
 	OfferAnswerOptions
 

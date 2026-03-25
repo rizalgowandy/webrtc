@@ -1,10 +1,12 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 import (
 	"testing"
 
-	"github.com/pion/webrtc/v3/pkg/rtcerr"
-
+	"github.com/pion/webrtc/v4/pkg/rtcerr"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,7 +15,7 @@ func TestNewSignalingState(t *testing.T) {
 		stateString   string
 		expectedState SignalingState
 	}{
-		{unknownStr, SignalingState(Unknown)},
+		{ErrUnknownType.Error(), SignalingStateUnknown},
 		{"stable", SignalingStateStable},
 		{"have-local-offer", SignalingStateHaveLocalOffer},
 		{"have-remote-offer", SignalingStateHaveRemoteOffer},
@@ -36,7 +38,7 @@ func TestSignalingState_String(t *testing.T) {
 		state          SignalingState
 		expectedString string
 	}{
-		{SignalingState(Unknown), unknownStr},
+		{SignalingStateUnknown, ErrUnknownType.Error()},
 		{SignalingStateStable, "stable"},
 		{SignalingStateHaveLocalOffer, "have-local-offer"},
 		{SignalingStateHaveRemoteOffer, "have-remote-offer"},
@@ -158,4 +160,13 @@ func TestSignalingState_Transitions(t *testing.T) {
 			)
 		}
 	}
+}
+
+func TestStateChangeOp_String_SetLocal(t *testing.T) {
+	assert.Equal(t, "SetLocal", stateChangeOpSetLocal.String())
+}
+
+func TestStateChangeOp_String_Default(t *testing.T) {
+	var unknown stateChangeOp = 999
+	assert.Equal(t, "Unknown State Change Operation", unknown.String())
 }

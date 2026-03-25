@@ -1,9 +1,12 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
 import (
 	"fmt"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 )
 
 func supportedNetworkTypes() []NetworkType {
@@ -15,12 +18,15 @@ func supportedNetworkTypes() []NetworkType {
 	}
 }
 
-// NetworkType represents the type of network
+// NetworkType represents the type of network.
 type NetworkType int
 
 const (
+	// NetworkTypeUnknown is the enum's zero-value.
+	NetworkTypeUnknown NetworkType = iota
+
 	// NetworkTypeUDP4 indicates UDP over IPv4.
-	NetworkTypeUDP4 NetworkType = iota + 1
+	NetworkTypeUDP4
 
 	// NetworkTypeUDP6 indicates UDP over IPv6.
 	NetworkTypeUDP6
@@ -55,8 +61,8 @@ func (t NetworkType) String() string {
 	}
 }
 
-// Protocol returns udp or tcp
-func (t NetworkType) Protocol() string {
+// Protocol returns udp or tcp.
+func (t NetworkType) Protocol() string { //nolint:staticcheck
 	switch t {
 	case NetworkTypeUDP4:
 		return "udp"
@@ -84,7 +90,7 @@ func NewNetworkType(raw string) (NetworkType, error) {
 	case networkTypeTCP6Str:
 		return NetworkTypeTCP6, nil
 	default:
-		return NetworkType(Unknown), fmt.Errorf("unknown network type: %s", raw)
+		return NetworkTypeUnknown, fmt.Errorf("%w: %s", errNetworkTypeUnknown, raw)
 	}
 }
 
@@ -99,6 +105,23 @@ func getNetworkType(iceNetworkType ice.NetworkType) (NetworkType, error) {
 	case ice.NetworkTypeTCP6:
 		return NetworkTypeTCP6, nil
 	default:
-		return NetworkType(Unknown), fmt.Errorf("unknown network type: %s", iceNetworkType.String())
+		return NetworkTypeUnknown, fmt.Errorf("%w: %s", errNetworkTypeUnknown, iceNetworkType.String())
 	}
+}
+
+func toICENetworkTypes(networkTypes []NetworkType) []ice.NetworkType {
+	if len(networkTypes) == 0 {
+		return nil
+	}
+
+	converted := make([]ice.NetworkType, 0, len(networkTypes))
+	for _, networkType := range networkTypes {
+		converted = append(converted, networkType.toICE())
+	}
+
+	return converted
+}
+
+func (networkType NetworkType) toICE() ice.NetworkType {
+	return ice.NetworkType(networkType)
 }

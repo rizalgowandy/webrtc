@@ -1,15 +1,20 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package rtpdump
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func TestReader(t *testing.T) {
+func TestReader(t *testing.T) { //nolint:maintidx
 	validPreamble := []byte("#!rtpplay1.0 224.2.0.1/3456\n")
 
 	for _, test := range []struct {
@@ -201,8 +206,8 @@ func TestReader(t *testing.T) {
 				0x81, 0xcb, 0x00, 0x0c,
 				0x90, 0x2f, 0x9e, 0x2e,
 				0x03, 0x46, 0x4f, 0x4f,
-				// packet header len=33, pLen=25, off=2
-				0x00, 0x21, 0x19, 0x00,
+				// packet header len=33, pLen=0, off=2
+				0x00, 0x21, 0x00, 0x19,
 				0x00, 0x00, 0x00, 0x02,
 				// packet payload (RTP)
 				0x90, 0x60, 0x69, 0x8f,
@@ -245,38 +250,36 @@ func TestReader(t *testing.T) {
 			WantErr: nil,
 		},
 	} {
-		r, hdr, err := NewReader(bytes.NewReader(test.Data))
+		reader, hdr, err := NewReader(bytes.NewReader(test.Data))
+		// we validate the error again. at the end of the reading loop.
 		if err != nil {
-			if got, want := err, test.WantErr; got != want {
-				t.Fatalf("NewReader(%s) err=%v want %v", test.Name, got, want)
-			}
+			assert.ErrorIs(t, err, test.WantErr, test.Name)
+
 			continue
 		}
-
-		if got, want := hdr, test.WantHeader; !reflect.DeepEqual(got, want) {
-			t.Fatalf("%q Header = %#v, want %#v", test.Name, got, want)
-		}
+		assert.Equal(t, test.WantHeader, hdr, test.Name)
 
 		var nextErr error
 		var packets []Packet
 		for {
-			pkt, err := r.Next()
-			if err == io.EOF {
+			pkt, err := reader.Next()
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
 				nextErr = err
+
 				break
 			}
 
 			packets = append(packets, pkt)
 		}
 
-		if got, want := nextErr, test.WantErr; got != want {
-			t.Fatalf("%s err=%v want %v", test.Name, got, want)
+		if test.WantErr != nil {
+			assert.ErrorIs(t, nextErr, test.WantErr, test.Name)
+		} else {
+			assert.NoError(t, nextErr, test.Name)
 		}
-		if got, want := packets, test.WantPackets; !reflect.DeepEqual(got, want) {
-			t.Fatalf("%q packets=%#v, want %#v", test.Name, got, want)
-		}
+		assert.Equal(t, test.WantPackets, packets, test.Name)
 	}
 }

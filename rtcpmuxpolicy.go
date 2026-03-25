@@ -1,15 +1,25 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
+
+import (
+	"encoding/json"
+)
 
 // RTCPMuxPolicy affects what ICE candidates are gathered to support
 // non-multiplexed RTCP.
 type RTCPMuxPolicy int
 
 const (
+	// RTCPMuxPolicyUnknown is the enum's zero-value.
+	RTCPMuxPolicyUnknown RTCPMuxPolicy = iota
+
 	// RTCPMuxPolicyNegotiate indicates to gather ICE candidates for both
 	// RTP and RTCP candidates. If the remote-endpoint is capable of
 	// multiplexing RTCP, multiplex RTCP on the RTP candidates. If it is not,
 	// use both the RTP and RTCP candidates separately.
-	RTCPMuxPolicyNegotiate RTCPMuxPolicy = iota + 1
+	RTCPMuxPolicyNegotiate
 
 	// RTCPMuxPolicyRequire indicates to gather ICE candidates only for
 	// RTP and multiplex RTCP on the RTP candidates. If the remote endpoint is
@@ -30,7 +40,7 @@ func newRTCPMuxPolicy(raw string) RTCPMuxPolicy {
 	case rtcpMuxPolicyRequireStr:
 		return RTCPMuxPolicyRequire
 	default:
-		return RTCPMuxPolicy(Unknown)
+		return RTCPMuxPolicyUnknown
 	}
 }
 
@@ -43,4 +53,21 @@ func (t RTCPMuxPolicy) String() string {
 	default:
 		return ErrUnknownType.Error()
 	}
+}
+
+// UnmarshalJSON parses the JSON-encoded data and stores the result.
+func (t *RTCPMuxPolicy) UnmarshalJSON(b []byte) error {
+	var val string
+	if err := json.Unmarshal(b, &val); err != nil {
+		return err
+	}
+
+	*t = newRTCPMuxPolicy(val)
+
+	return nil
+}
+
+// MarshalJSON returns the JSON encoding.
+func (t RTCPMuxPolicy) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.String())
 }

@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+// HTTP server that demonstrates Pion WebRTC examples
 package main
 
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
+	"go/build"
 	"html/template"
 	"log"
 	"net/http"
@@ -38,20 +42,18 @@ func main() {
 
 func serve(addr string) error {
 	// Load the examples
-	examples, err := getExamples()
-	if err != nil {
-		return err
-	}
+	examples := getExamples()
 
 	// Load the templates
 	homeTemplate := template.Must(template.ParseFiles("index.html"))
 
 	// Serve the required pages
 	// DIY 'mux' to avoid additional dependencies
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		url := r.URL.Path
+	http.HandleFunc("/", func(res http.ResponseWriter, req *http.Request) {
+		url := req.URL.Path
 		if url == "/wasm_exec.js" {
-			http.FileServer(http.Dir("./vendor-wasm/golang.org/misc/wasm/")).ServeHTTP(w, r)
+			http.FileServer(http.Dir(filepath.Join(build.Default.GOROOT, "lib/wasm/"))).ServeHTTP(res, req)
+
 			return
 		}
 
@@ -72,12 +74,16 @@ func serve(addr string) error {
 				}
 				fiddle := filepath.Join(exampleLink, "jsfiddle")
 				if len(parts[4]) != 0 {
-					http.StripPrefix("/example/"+exampleType+"/"+exampleLink+"/", http.FileServer(http.Dir(fiddle))).ServeHTTP(w, r)
+					http.StripPrefix(
+						"/example/"+exampleType+"/"+exampleLink+"/",
+						http.FileServer(http.Dir(fiddle)),
+					).ServeHTTP(res, req)
+
 					return
 				}
 
 				temp := template.Must(template.ParseFiles("example.html"))
-				_, err = temp.ParseFiles(filepath.Join(fiddle, "demo.html"))
+				_, err := temp.ParseFiles(filepath.Join(fiddle, "demo.html"))
 				if err != nil {
 					panic(err)
 				}
@@ -90,30 +96,32 @@ func serve(addr string) error {
 					exampleType == "js",
 				}
 
-				err = temp.Execute(w, data)
+				err = temp.Execute(res, data)
 				if err != nil {
 					panic(err)
 				}
+
 				return
 			}
 		}
 
 		// Serve the main page
-		err = homeTemplate.Execute(w, examples)
+		err := homeTemplate.Execute(res, examples)
 		if err != nil {
 			panic(err)
 		}
 	})
 
 	// Start the server
+	// nolint: gosec
 	return http.ListenAndServe(addr, nil)
 }
 
 // getExamples loads the examples from the examples.json file.
-func getExamples() (*Examples, error) {
+func getExamples() *Examples {
 	file, err := os.Open("./examples.json")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list examples (please run in the examples folder): %v", err)
+		panic(err)
 	}
 	defer func() {
 		closeErr := file.Close()
@@ -125,7 +133,7 @@ func getExamples() (*Examples, error) {
 	var examples Examples
 	err = json.NewDecoder(file).Decode(&examples)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse examples: %v", err)
+		panic(err)
 	}
 
 	for _, example := range examples {
@@ -140,5 +148,5 @@ func getExamples() (*Examples, error) {
 		}
 	}
 
-	return &examples, nil
+	return &examples
 }

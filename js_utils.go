@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+//go:build js && wasm
 // +build js,wasm
 
 package webrtc
@@ -15,23 +19,23 @@ func awaitPromise(promise js.Value) (js.Value, error) {
 	resultsChan := make(chan js.Value)
 	errChan := make(chan js.Error)
 
-	thenFunc := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	thenFunc := js.FuncOf(func(this js.Value, args []js.Value) any {
 		go func() {
 			resultsChan <- args[0]
 		}()
 		return js.Undefined()
 	})
 	defer thenFunc.Release()
-	promise.Call("then", thenFunc)
 
-	catchFunc := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	catchFunc := js.FuncOf(func(this js.Value, args []js.Value) any {
 		go func() {
 			errChan <- js.Error{args[0]}
 		}()
 		return js.Undefined()
 	})
 	defer catchFunc.Release()
-	promise.Call("catch", catchFunc)
+
+	promise.Call("then", thenFunc).Call("catch", catchFunc)
 
 	select {
 	case result := <-resultsChan:
@@ -42,7 +46,7 @@ func awaitPromise(promise js.Value) (js.Value, error) {
 }
 
 func valueToUint16Pointer(val js.Value) *uint16 {
-	if jsValueIsNull(val) || jsValueIsUndefined(val) {
+	if val.IsNull() || val.IsUndefined() {
 		return nil
 	}
 	convertedVal := uint16(val.Int())
@@ -50,7 +54,7 @@ func valueToUint16Pointer(val js.Value) *uint16 {
 }
 
 func valueToStringPointer(val js.Value) *string {
-	if jsValueIsNull(val) || jsValueIsUndefined(val) {
+	if val.IsNull() || val.IsUndefined() {
 		return nil
 	}
 	stringVal := val.String()
@@ -71,7 +75,7 @@ func uint8ToValueOrUndefined(val uint8) js.Value {
 	return js.ValueOf(val)
 }
 
-func interfaceToValueOrUndefined(val interface{}) js.Value {
+func interfaceToValueOrUndefined(val any) js.Value {
 	if val == nil {
 		return js.Undefined()
 	}
@@ -79,28 +83,28 @@ func interfaceToValueOrUndefined(val interface{}) js.Value {
 }
 
 func valueToStringOrZero(val js.Value) string {
-	if jsValueIsUndefined(val) || jsValueIsNull(val) {
+	if val.IsUndefined() || val.IsNull() {
 		return ""
 	}
 	return val.String()
 }
 
 func valueToUint8OrZero(val js.Value) uint8 {
-	if jsValueIsUndefined(val) || jsValueIsNull(val) {
+	if val.IsUndefined() || val.IsNull() {
 		return 0
 	}
 	return uint8(val.Int())
 }
 
 func valueToUint16OrZero(val js.Value) uint16 {
-	if jsValueIsNull(val) || jsValueIsUndefined(val) {
+	if val.IsNull() || val.IsUndefined() {
 		return 0
 	}
 	return uint16(val.Int())
 }
 
 func valueToUint32OrZero(val js.Value) uint32 {
-	if jsValueIsNull(val) || jsValueIsUndefined(val) {
+	if val.IsNull() || val.IsUndefined() {
 		return 0
 	}
 	return uint32(val.Int())
@@ -112,6 +116,23 @@ func valueToStrings(val js.Value) []string {
 		result[i] = val.Index(i).String()
 	}
 	return result
+}
+
+func valueToBoolOrFalse(val js.Value) bool {
+	if val.IsNull() || val.IsUndefined() {
+		return false
+	}
+
+	return val.Bool()
+}
+
+func valueToBoolPointer(val js.Value) *bool {
+	if val.IsNull() || val.IsUndefined() {
+		return nil
+	}
+	b := val.Bool()
+
+	return &b
 }
 
 func stringPointerToValue(val *string) js.Value {
@@ -128,6 +149,14 @@ func uint16PointerToValue(val *uint16) js.Value {
 	return js.ValueOf(*val)
 }
 
+func boolToValueOrUndefined(val bool) js.Value {
+	if !val {
+		return js.Undefined()
+	}
+
+	return js.ValueOf(val)
+}
+
 func boolPointerToValue(val *bool) js.Value {
 	if val == nil {
 		return js.Undefined()
@@ -136,7 +165,7 @@ func boolPointerToValue(val *bool) js.Value {
 }
 
 func stringsToValue(strings []string) js.Value {
-	val := make([]interface{}, len(strings))
+	val := make([]any, len(strings))
 	for i, s := range strings {
 		val[i] = s
 	}
@@ -151,7 +180,7 @@ func stringEnumToValueOrUndefined(s string) js.Value {
 }
 
 // Converts the return value of recover() to an error.
-func recoveryToError(e interface{}) error {
+func recoveryToError(e any) error {
 	switch e := e.(type) {
 	case error:
 		return e

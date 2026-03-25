@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+//go:build js && wasm
 // +build js,wasm
 
 // Package webrtc implements the WebRTC 1.0 as defined in W3C WebRTC specification document.
@@ -6,8 +10,8 @@ package webrtc
 import (
 	"syscall/js"
 
-	"github.com/pion/sdp/v2"
-	"github.com/pion/webrtc/v3/pkg/rtcerr"
+	"github.com/pion/ice/v4"
+	"github.com/pion/webrtc/v4/pkg/rtcerr"
 )
 
 // PeerConnection represents a WebRTC connection that establishes a
@@ -55,6 +59,7 @@ func (api *API) NewPeerConnection(configuration Configuration) (_ *PeerConnectio
 	}, nil
 }
 
+// JSValue returns the underlying PeerConnection
 func (pc *PeerConnection) JSValue() js.Value {
 	return pc.underlying
 }
@@ -66,7 +71,7 @@ func (pc *PeerConnection) OnSignalingStateChange(f func(SignalingState)) {
 		oldHandler := pc.onSignalingStateChangeHandler
 		defer oldHandler.Release()
 	}
-	onSignalingStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onSignalingStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) any {
 		state := newSignalingState(args[0].String())
 		go f(state)
 		return js.Undefined()
@@ -82,7 +87,7 @@ func (pc *PeerConnection) OnDataChannel(f func(*DataChannel)) {
 		oldHandler := pc.onDataChannelHandler
 		defer oldHandler.Release()
 	}
-	onDataChannelHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onDataChannelHandler := js.FuncOf(func(this js.Value, args []js.Value) any {
 		// pion/webrtc/projects/15
 		// This reference to the underlying DataChannel doesn't know
 		// about any other references to the same DataChannel. This might result in
@@ -107,7 +112,7 @@ func (pc *PeerConnection) OnNegotiationNeeded(f func()) {
 		oldHandler := pc.onNegotiationNeededHandler
 		defer oldHandler.Release()
 	}
-	onNegotiationNeededHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onNegotiationNeededHandler := js.FuncOf(func(this js.Value, args []js.Value) any {
 		go f()
 		return js.Undefined()
 	})
@@ -122,7 +127,7 @@ func (pc *PeerConnection) OnICEConnectionStateChange(f func(ICEConnectionState))
 		oldHandler := pc.onICEConnectionStateChangeHandler
 		defer oldHandler.Release()
 	}
-	onICEConnectionStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onICEConnectionStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) any {
 		connectionState := NewICEConnectionState(pc.underlying.Get("iceConnectionState").String())
 		go f(connectionState)
 		return js.Undefined()
@@ -138,7 +143,7 @@ func (pc *PeerConnection) OnConnectionStateChange(f func(PeerConnectionState)) {
 		oldHandler := pc.onConnectionStateChangeHandler
 		defer oldHandler.Release()
 	}
-	onConnectionStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onConnectionStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) any {
 		connectionState := newPeerConnectionState(pc.underlying.Get("connectionState").String())
 		go f(connectionState)
 		return js.Undefined()
@@ -177,14 +182,14 @@ func (pc *PeerConnection) checkConfiguration(configuration Configuration) error 
 	// }
 
 	// https://www.w3.org/TR/webrtc/#set-the-configuration (step #5)
-	if configuration.BundlePolicy != BundlePolicy(Unknown) {
+	if configuration.BundlePolicy != BundlePolicyUnknown {
 		if configuration.BundlePolicy != existingConfig.BundlePolicy {
 			return &rtcerr.InvalidModificationError{Err: ErrModifyingBundlePolicy}
 		}
 	}
 
 	// https://www.w3.org/TR/webrtc/#set-the-configuration (step #6)
-	if configuration.RTCPMuxPolicy != RTCPMuxPolicy(Unknown) {
+	if configuration.RTCPMuxPolicy != RTCPMuxPolicyUnknown {
 		if configuration.RTCPMuxPolicy != existingConfig.RTCPMuxPolicy {
 			return &rtcerr.InvalidModificationError{Err: ErrModifyingRTCPMuxPolicy}
 		}
@@ -330,7 +335,7 @@ func (pc *PeerConnection) OnICECandidate(f func(candidate *ICECandidate)) {
 		oldHandler := pc.onICECandidateHandler
 		defer oldHandler.Release()
 	}
-	onICECandidateHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onICECandidateHandler := js.FuncOf(func(this js.Value, args []js.Value) any {
 		candidate := valueToICECandidate(args[0].Get("candidate"))
 		if candidate == nil && pc.onGatherCompleteHandler != nil {
 			go pc.onGatherCompleteHandler()
@@ -350,7 +355,7 @@ func (pc *PeerConnection) OnICEGatheringStateChange(f func()) {
 		oldHandler := pc.onICEGatheringStateChangeHandler
 		defer oldHandler.Release()
 	}
-	onICEGatheringStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	onICEGatheringStateChangeHandler := js.FuncOf(func(this js.Value, args []js.Value) any {
 		go f()
 		return js.Undefined()
 	})
@@ -458,6 +463,21 @@ func (pc *PeerConnection) PendingRemoteDescription() *SessionDescription {
 	return valueToSessionDescription(desc)
 }
 
+// CanTrickleICECandidates reports whether the remote endpoint indicated
+// support for receiving trickled ICE candidates.
+func (pc *PeerConnection) CanTrickleICECandidates() ICETrickleCapability {
+	val := pc.underlying.Get("canTrickleIceCandidates")
+	if val.IsNull() || val.IsUndefined() {
+		return ICETrickleCapabilityUnknown
+	}
+
+	if val.Bool() {
+		return ICETrickleCapabilitySupported
+	}
+
+	return ICETrickleCapabilityUnsupported
+}
+
 // SignalingState returns the signaling state of the PeerConnection instance.
 func (pc *PeerConnection) SignalingState() SignalingState {
 	rawState := pc.underlying.Get("signalingState").String()
@@ -488,17 +508,66 @@ func (pc *PeerConnection) setGatherCompleteHandler(handler func()) {
 	}
 }
 
+// AddTransceiverFromKind Create a new RtpTransceiver and adds it to the set of transceivers.
+func (pc *PeerConnection) AddTransceiverFromKind(kind RTPCodecType, init ...RTPTransceiverInit) (transceiver *RTPTransceiver, err error) {
+	defer func() {
+		if e := recover(); e != nil {
+			err = recoveryToError(e)
+		}
+	}()
+
+	if len(init) == 1 {
+		return &RTPTransceiver{
+			underlying: pc.underlying.Call("addTransceiver", kind.String(), rtpTransceiverInitInitToValue(init[0])),
+		}, err
+	}
+
+	return &RTPTransceiver{
+		underlying: pc.underlying.Call("addTransceiver", kind.String()),
+	}, err
+}
+
+// GetTransceivers returns the RtpTransceiver that are currently attached to this PeerConnection
+func (pc *PeerConnection) GetTransceivers() (transceivers []*RTPTransceiver) {
+	rawTransceivers := pc.underlying.Call("getTransceivers")
+	transceivers = make([]*RTPTransceiver, rawTransceivers.Length())
+
+	for i := 0; i < rawTransceivers.Length(); i++ {
+		transceivers[i] = &RTPTransceiver{
+			underlying: rawTransceivers.Index(i),
+		}
+	}
+
+	return
+}
+
+// SCTP returns the SCTPTransport for this PeerConnection
+//
+// The SCTP transport over which SCTP data is sent and received. If SCTP has not been negotiated, the value is nil.
+// https://www.w3.org/TR/webrtc/#attributes-15
+func (pc *PeerConnection) SCTP() *SCTPTransport {
+	underlying := pc.underlying.Get("sctp")
+	if underlying.IsNull() || underlying.IsUndefined() {
+		return nil
+	}
+
+	return &SCTPTransport{
+		underlying: underlying,
+	}
+}
+
 // Converts a Configuration to js.Value so it can be passed
 // through to the JavaScript WebRTC API. Any zero values are converted to
 // js.Undefined(), which will result in the default value being used.
 func configurationToValue(configuration Configuration) js.Value {
-	return js.ValueOf(map[string]interface{}{
-		"iceServers":           iceServersToValue(configuration.ICEServers),
-		"iceTransportPolicy":   stringEnumToValueOrUndefined(configuration.ICETransportPolicy.String()),
-		"bundlePolicy":         stringEnumToValueOrUndefined(configuration.BundlePolicy.String()),
-		"rtcpMuxPolicy":        stringEnumToValueOrUndefined(configuration.RTCPMuxPolicy.String()),
-		"peerIdentity":         stringToValueOrUndefined(configuration.PeerIdentity),
-		"iceCandidatePoolSize": uint8ToValueOrUndefined(configuration.ICECandidatePoolSize),
+	return js.ValueOf(map[string]any{
+		"iceServers":                  iceServersToValue(configuration.ICEServers),
+		"iceTransportPolicy":          stringEnumToValueOrUndefined(configuration.ICETransportPolicy.String()),
+		"bundlePolicy":                stringEnumToValueOrUndefined(configuration.BundlePolicy.String()),
+		"rtcpMuxPolicy":               stringEnumToValueOrUndefined(configuration.RTCPMuxPolicy.String()),
+		"peerIdentity":                stringToValueOrUndefined(configuration.PeerIdentity),
+		"iceCandidatePoolSize":        uint8ToValueOrUndefined(configuration.ICECandidatePoolSize),
+		"alwaysNegotiateDataChannels": boolToValueOrUndefined(configuration.AlwaysNegotiateDataChannels),
 
 		// Note: Certificates are not currently supported.
 		// "certificates": configuration.Certificates,
@@ -509,34 +578,52 @@ func iceServersToValue(iceServers []ICEServer) js.Value {
 	if len(iceServers) == 0 {
 		return js.Undefined()
 	}
-	maps := make([]interface{}, len(iceServers))
+	maps := make([]any, len(iceServers))
 	for i, server := range iceServers {
 		maps[i] = iceServerToValue(server)
 	}
 	return js.ValueOf(maps)
 }
 
+func oauthCredentialToValue(o OAuthCredential) js.Value {
+	out := map[string]any{
+		"MACKey":      o.MACKey,
+		"AccessToken": o.AccessToken,
+	}
+	return js.ValueOf(out)
+}
+
 func iceServerToValue(server ICEServer) js.Value {
-	return js.ValueOf(map[string]interface{}{
-		"urls":     stringsToValue(server.URLs), // required
-		"username": stringToValueOrUndefined(server.Username),
-		// Note: credential and credentialType are not currently supported.
-		// "credential":     interfaceToValueOrUndefined(server.Credential),
-		// "credentialType": stringEnumToValueOrUndefined(server.CredentialType.String()),
-	})
+	out := map[string]any{
+		"urls": stringsToValue(server.URLs), // required
+	}
+	if server.Username != "" {
+		out["username"] = stringToValueOrUndefined(server.Username)
+	}
+	if server.Credential != nil {
+		switch t := server.Credential.(type) {
+		case string:
+			out["credential"] = stringToValueOrUndefined(t)
+		case OAuthCredential:
+			out["credential"] = oauthCredentialToValue(t)
+		}
+	}
+	out["credentialType"] = stringEnumToValueOrUndefined(server.CredentialType.String())
+	return js.ValueOf(out)
 }
 
 func valueToConfiguration(configValue js.Value) Configuration {
-	if jsValueIsNull(configValue) || jsValueIsUndefined(configValue) {
+	if configValue.IsNull() || configValue.IsUndefined() {
 		return Configuration{}
 	}
 	return Configuration{
-		ICEServers:           valueToICEServers(configValue.Get("iceServers")),
-		ICETransportPolicy:   NewICETransportPolicy(valueToStringOrZero(configValue.Get("iceTransportPolicy"))),
-		BundlePolicy:         newBundlePolicy(valueToStringOrZero(configValue.Get("bundlePolicy"))),
-		RTCPMuxPolicy:        newRTCPMuxPolicy(valueToStringOrZero(configValue.Get("rtcpMuxPolicy"))),
-		PeerIdentity:         valueToStringOrZero(configValue.Get("peerIdentity")),
-		ICECandidatePoolSize: valueToUint8OrZero(configValue.Get("iceCandidatePoolSize")),
+		ICEServers:                  valueToICEServers(configValue.Get("iceServers")),
+		ICETransportPolicy:          NewICETransportPolicy(valueToStringOrZero(configValue.Get("iceTransportPolicy"))),
+		BundlePolicy:                newBundlePolicy(valueToStringOrZero(configValue.Get("bundlePolicy"))),
+		RTCPMuxPolicy:               newRTCPMuxPolicy(valueToStringOrZero(configValue.Get("rtcpMuxPolicy"))),
+		PeerIdentity:                valueToStringOrZero(configValue.Get("peerIdentity")),
+		ICECandidatePoolSize:        valueToUint8OrZero(configValue.Get("iceCandidatePoolSize")),
+		AlwaysNegotiateDataChannels: valueToBoolOrFalse(configValue.Get("alwaysNegotiateDataChannels")),
 
 		// Note: Certificates are not supported.
 		// Certificates []Certificate
@@ -544,7 +631,7 @@ func valueToConfiguration(configValue js.Value) Configuration {
 }
 
 func valueToICEServers(iceServersValue js.Value) []ICEServer {
-	if jsValueIsNull(iceServersValue) || jsValueIsUndefined(iceServersValue) {
+	if iceServersValue.IsNull() || iceServersValue.IsUndefined() {
 		return nil
 	}
 	iceServers := make([]ICEServer, iceServersValue.Length())
@@ -554,31 +641,54 @@ func valueToICEServers(iceServersValue js.Value) []ICEServer {
 	return iceServers
 }
 
+func valueToICECredential(iceCredentialValue js.Value) any {
+	if iceCredentialValue.IsNull() || iceCredentialValue.IsUndefined() {
+		return nil
+	}
+	if iceCredentialValue.Type() == js.TypeString {
+		return iceCredentialValue.String()
+	}
+	if iceCredentialValue.Type() == js.TypeObject {
+		return OAuthCredential{
+			MACKey:      iceCredentialValue.Get("MACKey").String(),
+			AccessToken: iceCredentialValue.Get("AccessToken").String(),
+		}
+	}
+	return nil
+}
+
 func valueToICEServer(iceServerValue js.Value) ICEServer {
-	return ICEServer{
+	tpe, err := newICECredentialType(valueToStringOrZero(iceServerValue.Get("credentialType")))
+	if err != nil {
+		tpe = ICECredentialTypePassword
+	}
+	s := ICEServer{
 		URLs:     valueToStrings(iceServerValue.Get("urls")), // required
 		Username: valueToStringOrZero(iceServerValue.Get("username")),
 		// Note: Credential and CredentialType are not currently supported.
-		// Credential: iceServerValue.Get("credential"),
-		// CredentialType: newICECredentialType(valueToStringOrZero(iceServerValue.Get("credentialType"))),
+		Credential:     valueToICECredential(iceServerValue.Get("credential")),
+		CredentialType: tpe,
 	}
+
+	return s
 }
 
 func valueToICECandidate(val js.Value) *ICECandidate {
-	if jsValueIsNull(val) || jsValueIsUndefined(val) {
+	if val.IsNull() || val.IsUndefined() {
 		return nil
 	}
-	if jsValueIsUndefined(val.Get("protocol")) && !jsValueIsUndefined(val.Get("candidate")) {
+	if val.Get("protocol").IsUndefined() && !val.Get("candidate").IsUndefined() {
 		// Missing some fields, assume it's Firefox and parse SDP candidate.
-		attribute := sdp.NewAttribute("candidate", val.Get("candidate").String())
-		sdpCandidate, err := attribute.ToICECandidate()
+		c, err := ice.UnmarshalCandidate(val.Get("candidate").String())
 		if err != nil {
 			return nil
 		}
-		iceCandidate, err := newICECandidateFromSDP(sdpCandidate)
+
+		iceCandidate, err := newICECandidateFromICE(c, "", 0)
 		if err != nil {
 			return nil
 		}
+
 		return &iceCandidate
 	}
 	protocol, _ := NewICEProtocol(val.Get("protocol").String())
@@ -611,18 +721,19 @@ func sessionDescriptionToValue(desc *SessionDescription) js.Value {
 	if desc == nil {
 		return js.Undefined()
 	}
-	return js.ValueOf(map[string]interface{}{
+	return js.ValueOf(map[string]any{
 		"type": desc.Type.String(),
 		"sdp":  desc.SDP,
 	})
 }
 
 func valueToSessionDescription(descValue js.Value) *SessionDescription {
-	if jsValueIsNull(descValue) || jsValueIsUndefined(descValue) {
+	if descValue.IsNull() || descValue.IsUndefined() {
 		return nil
 	}
+
 	return &SessionDescription{
-		Type: newSDPType(descValue.Get("type").String()),
+		Type: NewSDPType(descValue.Get("type").String()),
 		SDP:  descValue.Get("sdp").String(),
 	}
 }
@@ -631,7 +742,7 @@ func offerOptionsToValue(offerOptions *OfferOptions) js.Value {
 	if offerOptions == nil {
 		return js.Undefined()
 	}
-	return js.ValueOf(map[string]interface{}{
+	return js.ValueOf(map[string]any{
 		"iceRestart":             offerOptions.ICERestart,
 		"voiceActivityDetection": offerOptions.VoiceActivityDetection,
 	})
@@ -641,17 +752,17 @@ func answerOptionsToValue(answerOptions *AnswerOptions) js.Value {
 	if answerOptions == nil {
 		return js.Undefined()
 	}
-	return js.ValueOf(map[string]interface{}{
+	return js.ValueOf(map[string]any{
 		"voiceActivityDetection": answerOptions.VoiceActivityDetection,
 	})
 }
 
 func iceCandidateInitToValue(candidate ICECandidateInit) js.Value {
-	return js.ValueOf(map[string]interface{}{
+	return js.ValueOf(map[string]any{
 		"candidate":        candidate.Candidate,
 		"sdpMid":           stringPointerToValue(candidate.SDPMid),
 		"sdpMLineIndex":    uint16PointerToValue(candidate.SDPMLineIndex),
-		"usernameFragment": candidate.UsernameFragment,
+		"usernameFragment": stringPointerToValue(candidate.UsernameFragment),
 	})
 }
 
@@ -661,7 +772,7 @@ func dataChannelInitToValue(options *DataChannelInit) js.Value {
 	}
 
 	maxPacketLifeTime := uint16PointerToValue(options.MaxPacketLifeTime)
-	return js.ValueOf(map[string]interface{}{
+	return js.ValueOf(map[string]any{
 		"ordered":           boolPointerToValue(options.Ordered),
 		"maxPacketLifeTime": maxPacketLifeTime,
 		// See https://bugs.chromium.org/p/chromium/issues/detail?id=696681
@@ -671,5 +782,11 @@ func dataChannelInitToValue(options *DataChannelInit) js.Value {
 		"protocol":          stringPointerToValue(options.Protocol),
 		"negotiated":        boolPointerToValue(options.Negotiated),
 		"id":                uint16PointerToValue(options.ID),
+	})
+}
+
+func rtpTransceiverInitInitToValue(init RTPTransceiverInit) js.Value {
+	return js.ValueOf(map[string]any{
+		"direction": init.Direction.String(),
 	})
 }

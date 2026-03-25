@@ -1,7 +1,11 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package webrtc
 
-// RtpTransceiverInit dictionary is used when calling the WebRTC function addTransceiver() to provide configuration options for the new transceiver.
-type RtpTransceiverInit struct {
+// RTPTransceiverInit dictionary is used when calling the WebRTC function addTransceiver()
+// to provide configuration options for the new transceiver.
+type RTPTransceiverInit struct {
 	Direction     RTPTransceiverDirection
 	SendEncodings []RTPEncodingParameters
 	// Streams       []*Track

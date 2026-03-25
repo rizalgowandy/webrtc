@@ -1,13 +1,17 @@
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 package rtpdump
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"regexp"
 	"sync"
 )
 
-// Reader reads the RTPDump file format
+// Reader reads the RTPDump file format.
 type Reader struct {
 	readerMu sync.Mutex
 	reader   io.Reader
@@ -22,7 +26,7 @@ func NewReader(r io.Reader) (*Reader, Header, error) {
 
 	// Look ahead to see if there's a valid preamble
 	peek, err := bio.Peek(preambleLen)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return nil, hdr, errMalformed
 	}
 	if err != nil {
@@ -30,14 +34,14 @@ func NewReader(r io.Reader) (*Reader, Header, error) {
 	}
 
 	// The file starts with #!rtpplay1.0 address/port\n
-	var preambleRegexp = regexp.MustCompile(`#\!rtpplay1\.0 \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,5}\n`)
+	preambleRegexp := regexp.MustCompile(`#\!rtpplay1\.0 \d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,5}\n`)
 	if !preambleRegexp.Match(peek) {
 		return nil, hdr, errMalformed
 	}
 
 	// consume the preamble
 	_, _, err = bio.ReadLine()
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return nil, hdr, errMalformed
 	}
 	if err != nil {
@@ -46,7 +50,7 @@ func NewReader(r io.Reader) (*Reader, Header, error) {
 
 	hBuf := make([]byte, headerLen)
 	_, err = io.ReadFull(bio, hBuf)
-	if err == io.ErrUnexpectedEOF || err == io.EOF {
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 		return nil, hdr, errMalformed
 	}
 	if err != nil {
@@ -62,7 +66,7 @@ func NewReader(r io.Reader) (*Reader, Header, error) {
 	}, hdr, nil
 }
 
-// Next returns the next Packet in the Reader input stream
+// Next returns the next Packet in the Reader input stream.
 func (r *Reader) Next() (Packet, error) {
 	r.readerMu.Lock()
 	defer r.readerMu.Unlock()
@@ -70,25 +74,25 @@ func (r *Reader) Next() (Packet, error) {
 	hBuf := make([]byte, pktHeaderLen)
 
 	_, err := io.ReadFull(r.reader, hBuf)
-	if err == io.ErrUnexpectedEOF {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return Packet{}, errMalformed
 	}
 	if err != nil {
 		return Packet{}, err
 	}
 
-	var h packetHeader
-	if err = h.Unmarshal(hBuf); err != nil {
+	var header packetHeader
+	if err = header.Unmarshal(hBuf); err != nil {
 		return Packet{}, err
 	}
 
-	if h.Length == 0 {
+	if header.Length == 0 {
 		return Packet{}, errMalformed
 	}
 
-	payload := make([]byte, h.Length-pktHeaderLen)
+	payload := make([]byte, header.Length-pktHeaderLen)
 	_, err = io.ReadFull(r.reader, payload)
-	if err == io.ErrUnexpectedEOF {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return Packet{}, errMalformed
 	}
 	if err != nil {
@@ -96,8 +100,8 @@ func (r *Reader) Next() (Packet, error) {
 	}
 
 	return Packet{
-		Offset:  h.offset(),
-		IsRTCP:  h.PacketLength == 0,
+		Offset:  header.offset(),
+		IsRTCP:  header.PacketLength == 0,
 		Payload: payload,
 	}, nil
 }
